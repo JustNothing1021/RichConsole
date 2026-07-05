@@ -253,6 +253,8 @@ This project is a port of two excellent Python libraries:
 - **[Rich](https://github.com/Textualize/rich)** by [Will McGugan](https://github.com/willmcgugan) — The original Python library that inspired this entire project. If you find RichConsole useful, please consider [sponsoring Will on GitHub](https://github.com/sponsors/willmcgugan).
 - **[noneprompt](https://github.com/nonebot/noneprompt)** by NoneBot team — The Python interactive prompt library that we ported for the `noneprompt` module.
 
+The core porting work and debugging was done with the assistance of **GLM-5.1** (via Trae IDE) — an AI coding assistant that helped translate Python rich's architecture to Java, fix rendering bugs, and write documentation.
+
 ## License
 
 MIT

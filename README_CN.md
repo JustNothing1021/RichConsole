@@ -252,6 +252,8 @@ io.github.richconsole
 - **[Rich](https://github.com/Textualize/rich)** 作者 [Will McGugan](https://github.com/willmcgugan) —— 启发了整个项目的原始 Python 库。如果你觉得 RichConsole 有用，请考虑[在 GitHub 上赞助 Will](https://github.com/sponsors/willmcgugan)。
 - **[noneprompt](https://github.com/nonebot/noneprompt)** 由 NoneBot 团队开发 —— 我们移植的 Python 交互式提示库，用于 `noneprompt` 模块。
 
+核心移植工作与调试由 **GLM-5.1**（通过 Trae IDE）协助完成 —— 这个 AI 编程助手帮助将 Python rich 的架构翻译为 Java、修复渲染 bug 以及撰写文档。
+
 ## 许可证
 
 MIT
