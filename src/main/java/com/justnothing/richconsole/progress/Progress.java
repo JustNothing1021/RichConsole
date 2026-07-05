@@ -196,8 +196,33 @@ public class Progress implements RichRenderable, AutoCloseable {
             return fields;
         }
 
-        public Deque<ProgressSample> getProgress() {
-            return progress;
+        /**
+         * 返回 progress 采样数据的快照副本。
+         * 不暴露内部 Deque 引用，防止外部修改导致 CME。
+         */
+        public List<ProgressSample> getProgressSnapshot() {
+            synchronized (progress) {
+                return new ArrayList<>(progress);
+            }
+        }
+
+        /**
+         * 清理过期的采样数据，并添加新的采样。
+         * 所有操作在 synchronized(progress) 内完成，避免 CME。
+         */
+        public void pruneAndAddSample(double oldSampleTime, double now, double updateCompleted) {
+            synchronized (progress) {
+                while (!progress.isEmpty()
+                        && progress.peekFirst().getTimestamp() < oldSampleTime) {
+                    progress.pollFirst();
+                }
+                while (progress.size() > MAX_PROGRESS_SAMPLES) {
+                    progress.pollFirst();
+                }
+                if (updateCompleted > 0) {
+                    progress.addLast(new ProgressSample(now, updateCompleted));
+                }
+            }
         }
 
         public boolean isStarted() {
@@ -246,17 +271,17 @@ public class Progress implements RichRenderable, AutoCloseable {
             if (elapsed == null || elapsed == 0.0) {
                 return null;
             }
+            List<ProgressSample> snapshot = getProgressSnapshot();
             double totalCompleted = 0.0;
-            for (ProgressSample sample : progress) {
+            for (ProgressSample sample : snapshot) {
                 totalCompleted += sample.getCompleted();
             }
             if (totalCompleted <= 0.0) {
                 return null;
             }
             double elapsedSinceFirstSample = elapsed;
-            if (!progress.isEmpty()) {
-                double firstTimestamp = progress.peekFirst().getTimestamp();
-                elapsedSinceFirstSample = getTime.getAsDouble() - firstTimestamp;
+            if (!snapshot.isEmpty()) {
+                elapsedSinceFirstSample = getTime.getAsDouble() - snapshot.get(0).getTimestamp();
             }
             if (elapsedSinceFirstSample <= 0.0) {
                 return null;
@@ -274,7 +299,9 @@ public class Progress implements RichRenderable, AutoCloseable {
         }
 
         public void reset() {
-            progress.clear();
+            synchronized (progress) {
+                progress.clear();
+            }
             finishedTime = null;
             finishedSpeed = null;
         }
@@ -523,15 +550,7 @@ public class Progress implements RichRenderable, AutoCloseable {
             double now = currentTime();
             double oldSampleTime = now - speedEstimatePeriod;
 
-            Deque<ProgressSample> progressDeque = task.getProgress();
-            while (!progressDeque.isEmpty()
-                    && progressDeque.peekFirst().getTimestamp() < oldSampleTime) {
-                progressDeque.pollFirst();
-            }
-
-            if (updateCompleted > 0) {
-                progressDeque.addLast(new ProgressSample(now, updateCompleted));
-            }
+            task.pruneAndAddSample(oldSampleTime, now, updateCompleted);
 
             if (task.getTotal() != null
                     && task.getCompleted() >= task.getTotal()
@@ -566,16 +585,7 @@ public class Progress implements RichRenderable, AutoCloseable {
             double updateCompleted = task.getCompleted() - completedStart;
             double oldSampleTime = now - speedEstimatePeriod;
 
-            Deque<ProgressSample> progressDeque = task.getProgress();
-            while (!progressDeque.isEmpty()
-                    && progressDeque.peekFirst().getTimestamp() < oldSampleTime) {
-                progressDeque.pollFirst();
-            }
-            while (progressDeque.size() > MAX_PROGRESS_SAMPLES) {
-                progressDeque.pollFirst();
-            }
-
-            progressDeque.addLast(new ProgressSample(now, updateCompleted));
+            task.pruneAndAddSample(oldSampleTime, now, updateCompleted);
 
             if (task.getTotal() != null
                     && task.getCompleted() >= task.getTotal()

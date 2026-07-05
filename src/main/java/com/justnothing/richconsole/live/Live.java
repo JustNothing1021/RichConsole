@@ -49,6 +49,9 @@ public class Live implements AutoCloseable, RenderHook {
             this.live = live;
             this.refreshPerSecond = refreshPerSecond;
             setDaemon(true);
+            // 防止异常逃逸到 ThreadGroup 导致宿主进程崩溃
+            setUncaughtExceptionHandler((t, e) ->
+                System.err.println("[RichConsole] RefreshThread uncaught exception: " + e));
         }
 
         void stopRefresh() {
@@ -66,7 +69,13 @@ public class Live implements AutoCloseable, RenderHook {
                     Thread.currentThread().interrupt();
                 }
                 if (!done) {
-                    live.refresh();
+                    try {
+                        live.refresh();
+                    } catch (Exception e) {
+                        // 双重保险：捕获刷新异常，防止逃逸到 ThreadGroup 导致宿主进程崩溃
+                        // UncaughtExceptionHandler 是兜底，这里是第一道防线
+                        System.err.println("[RichConsole] RefreshThread caught exception: " + e);
+                    }
                 }
             }
         }

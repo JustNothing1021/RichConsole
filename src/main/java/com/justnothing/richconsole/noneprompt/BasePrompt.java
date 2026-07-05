@@ -102,7 +102,7 @@ public abstract class BasePrompt<R> {
     public BasePrompt(Console console, PromptStyle promptStyle) {
         this.console = console;
         this.terminal = console.getTerminal();
-        this.bindingReader = new BindingReader(terminal.reader());
+        this.bindingReader = terminal != null ? new BindingReader(terminal.reader()) : null;
         this.promptStyle = promptStyle != null ? promptStyle : new PromptStyle();
     }
 
@@ -193,22 +193,11 @@ public abstract class BasePrompt<R> {
     // =========================================================================
 
     private void enterRawMode() {
-        savedAttributes = terminal.getAttributes();
-        Attributes rawAttrs = new Attributes(savedAttributes);
-        // Disable canonical mode and echo
-        rawAttrs.setLocalFlag(Attributes.LocalFlag.ICANON, false);
-        rawAttrs.setLocalFlag(Attributes.LocalFlag.ECHO, false);
-        rawAttrs.setLocalFlag(Attributes.LocalFlag.ISIG, false);
-        rawAttrs.setLocalFlag(Attributes.LocalFlag.IEXTEN, false);
-        // Disable input processing
-        rawAttrs.setInputFlag(Attributes.InputFlag.ICRNL, false);
-        rawAttrs.setInputFlag(Attributes.InputFlag.INPCK, false);
-        rawAttrs.setInputFlag(Attributes.InputFlag.ISTRIP, false);
-        rawAttrs.setInputFlag(Attributes.InputFlag.IXON, false);
-        // Set minimum characters and timeout for read
-        rawAttrs.setControlChar(Attributes.ControlChar.VMIN, 1);
-        rawAttrs.setControlChar(Attributes.ControlChar.VTIME, 0);
-        terminal.setAttributes(rawAttrs);
+        // 使用 terminal.enterRawMode() 而非手动 setAttributes()，
+        // 这样 RemoteServerTerminal 的重写方法才能正确触发，
+        // 向客户端发送 "enterRawMode" RPC 信号以同步 raw mode 状态。
+        // JLine Terminal.enterRawMode() 内部实现与之前手动设置的属性完全一致。
+        savedAttributes = terminal.enterRawMode();
     }
 
     private void exitRawMode() {

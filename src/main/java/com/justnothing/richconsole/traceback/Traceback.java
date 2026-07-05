@@ -125,8 +125,8 @@ public class Traceback implements RichRenderable {
      * Usage: {@code Traceback.of(trace, cfg -> cfg.width(120).theme("github-dark").showLocals(true))}
      */
     public static class Config {
-        public int width = 100;
-        public int codeWidth = 88;
+        public int width = 0;
+        public int codeWidth = 0;
         public int extraLines = 3;
         public String theme = "monokai";
         public boolean wordWrap = false;
@@ -225,7 +225,7 @@ public class Traceback implements RichRenderable {
      */
     public static Traceback fromThrowable(Throwable throwable) {
         Trace trace = fromThrowable(throwable, false);
-        return new Traceback(trace, 100, 88, 3, "monokai",
+        return new Traceback(trace, 0, 0, 3, "monokai",
                 true, false, 100, Collections.emptyList());
     }
 
@@ -241,6 +241,10 @@ public class Traceback implements RichRenderable {
             return result;
         }
 
+        // 自动检测宽度：0 = 使用 console 终端宽度
+        int effectiveWidth = width > 0 ? width : console.getSize().width();
+        int effectiveCodeWidth = codeWidth > 0 ? codeWidth : Math.max(10, effectiveWidth - 12);
+
         List<Stack> stacks = trace.getStacks();
         Style borderStyle = console.getStyle("traceback.border");
 
@@ -253,7 +257,7 @@ public class Traceback implements RichRenderable {
         List<Object> mainContent = new ArrayList<>();
 
         // Render frames for main exception
-        renderFrames(mainContent, console, options, mainStack);
+        renderFrames(mainContent, console, options, mainStack, effectiveCodeWidth);
 
         // Exception type and message
         Text excText = new Text();
@@ -272,7 +276,7 @@ public class Traceback implements RichRenderable {
 
         // Render first cause as nested panel (which will recursively include further causes)
         if (!causes.isEmpty()) {
-            Panel causePanel = renderCauseChain(console, options, causes, 0);
+            Panel causePanel = renderCauseChain(console, options, causes, 0, effectiveWidth, effectiveCodeWidth);
             mainContent.add(causePanel);
         }
 
@@ -288,7 +292,7 @@ public class Traceback implements RichRenderable {
             true,
             null,
             borderStyle,
-            width > 0 ? width : null,
+            effectiveWidth > 0 ? effectiveWidth : null,
             null,
             new int[]{0, 1, 0, 1}
         );
@@ -300,7 +304,8 @@ public class Traceback implements RichRenderable {
     // Frame rendering
     // =========================================================================
 
-    private void renderFrames(List<Object> content, Console console, ConsoleOptions options, Stack stack) {
+    private void renderFrames(List<Object> content, Console console, ConsoleOptions options,
+                              Stack stack, int effectiveCodeWidth) {
         List<Frame> frames = stack.getFrames();
         int frameCount = frames.size();
         boolean truncated = false;
@@ -330,7 +335,7 @@ public class Traceback implements RichRenderable {
                     Syntax syntax = Syntax.of(code, cfg -> cfg
                             .lexerName("java").lineNumbers(true).startLine(startLine)
                             .highlightLines(highlightLines)
-                            .themeName(theme).codeWidth(codeWidth).wordWrap(wordWrap));
+                            .themeName(theme).codeWidth(effectiveCodeWidth).wordWrap(wordWrap));
                     content.add(syntax);
                 }
             }
@@ -347,14 +352,15 @@ public class Traceback implements RichRenderable {
     // =========================================================================
 
     private Panel renderCauseChain(Console console, ConsoleOptions options,
-                                   List<Stack> causes, int index) {
+                                   List<Stack> causes, int index,
+                                   int effectiveWidth, int effectiveCodeWidth) {
         Style borderStyle = console.getStyle("traceback.border");
         Stack cause = causes.get(index);
 
         List<Object> content = new ArrayList<>();
 
         // Render frames for this cause
-        renderFrames(content, console, options, cause);
+        renderFrames(content, console, options, cause, effectiveCodeWidth);
 
         // Exception type and message
         Text excText = new Text();
@@ -373,7 +379,7 @@ public class Traceback implements RichRenderable {
 
         // Recursively render the next cause (nested inside this panel)
         if (index + 1 < causes.size()) {
-            Panel nestedCause = renderCauseChain(console, options, causes, index + 1);
+            Panel nestedCause = renderCauseChain(console, options, causes, index + 1, effectiveWidth, effectiveCodeWidth);
             content.add(nestedCause);
         }
 
@@ -388,7 +394,7 @@ public class Traceback implements RichRenderable {
             true,
             null,
             borderStyle,
-            width > 0 ? width - 2 * (index + 1) : null, // progressively narrower for deeper nesting
+            effectiveWidth > 0 ? effectiveWidth - 2 * (index + 1) : null, // progressively narrower for deeper nesting
             null,
             new int[]{0, 1, 0, 1}
         );

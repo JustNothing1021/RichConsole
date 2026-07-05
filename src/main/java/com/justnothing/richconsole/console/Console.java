@@ -1,7 +1,6 @@
 package com.justnothing.richconsole.console;
 
 import java.io.IOException;
-import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -16,6 +15,7 @@ import com.justnothing.richconsole.progress.Progress;
 import com.justnothing.richconsole.status.Status;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
@@ -31,6 +31,7 @@ import com.justnothing.richconsole.errors.NotRenderableError;
 import com.justnothing.richconsole.errors.StyleSyntaxError;
 import com.justnothing.richconsole.markup.Markup;
 import com.justnothing.richconsole.measure.Measurement;
+import com.justnothing.richconsole.panel.Panel;
 import com.justnothing.richconsole.protocol.Protocol;
 import com.justnothing.richconsole.region.Region;
 import com.justnothing.richconsole.rule.Rule;
@@ -60,21 +61,16 @@ public class Console {
 
     private static final int JUPYTER_DEFAULT_COLUMNS = 115;
     private static final int JUPYTER_DEFAULT_LINES = 100;
-    private static final int DEFAULT_WIDTH = 80;
-    private static final int DEFAULT_HEIGHT = 25;
     private static final int MAX_WRITE = 32 * 1024 / 4; // 8K chars
     private static final int DEFAULT_TAB_SIZE = 8;
 
     private static final String COLOR_SYSTEM_AUTO = "auto";
-    private static final String TERM_TYPE_DUMB = "dumb";
     private static final String TERM_TYPE_UNKNOWN = "unknown";
     private static final String DEFAULT_ENCODING = "utf-8";
     private static final String COLOR_SYSTEM_NAME_STANDARD = "standard";
     private static final String COLOR_SYSTEM_NAME_256 = "256";
     private static final String COLOR_SYSTEM_NAME_TRUECOLOR = "truecolor";
     private static final String COLOR_SYSTEM_NAME_WINDOWS = "windows";
-    private static final String COLORTERM_TRUECOLOR = "truecolor";
-    private static final String COLORTERM_24BIT = "24bit";
     private static final String OVERFLOW_IGNORE = "ignore";
 
     private static final Map<String, ColorSystem> COLOR_SYSTEMS;
@@ -120,8 +116,7 @@ public class Console {
     private final boolean stderr;
     private final boolean legacyWindows;
     private final boolean safeBox;
-    private final PrintStream outputFile;
-    private final Terminal terminal; // JLine terminal, null if unavailable
+    private final Terminal terminal;
 
     private final ReentrantLock lock = new ReentrantLock();
     private final ThemeStack themeStack;
@@ -145,7 +140,7 @@ public class Console {
         boolean softWrap = false;
         Theme theme = null;
         boolean stderr = false;
-        PrintStream outputFile = null;
+        Terminal terminal = null;
         boolean quiet = false;
         Integer width = null;
         Integer height = null;
@@ -160,7 +155,6 @@ public class Console {
         Object highlighter = null;
         boolean safeBox = true;
         Boolean legacyWindows;
-        Consumer<TerminalBuilder> terminalConfigurer = null;
         public ConsoleConfig() {
         }
 
@@ -207,9 +201,9 @@ public class Console {
             this.stderr = stderr;
             return this;
         }
-        
-        public ConsoleConfig withOutputFile(PrintStream outputFile) {
-            this.outputFile = outputFile;
+
+        public ConsoleConfig withTerminal(Terminal terminal) {
+            this.terminal = terminal;
             return this;
         }
 
@@ -273,18 +267,13 @@ public class Console {
             return this;
         }
 
-        public ConsoleConfig withTerminalConfigurer(Consumer<TerminalBuilder> terminalConfigurer) {
-            this.terminalConfigurer = terminalConfigurer;
-            return this;
-        }
-
         public Console build() {
             return new Console(
                     colorSystem, forceTerminal, forceJupyter, forceInteractive,
-                    softWrap, theme, stderr, outputFile, quiet,
+                    softWrap, theme, stderr, terminal, quiet,
                     width, height, style, noColor, tabSize, record,
                     markup, emoji, highlight, logTimeFormat, highlighter,
-                    safeBox, legacyWindows, terminalConfigurer
+                    safeBox, legacyWindows
             );
         }
     }
@@ -295,23 +284,12 @@ public class Console {
 
     /**
      * Create a Console with default settings.
+     * Uses JLine Terminal with auto-detection.
      */
     public Console() {
         this(null, null, null, null, false, null, false, null,
                 false, null, null, null, false, DEFAULT_TAB_SIZE, false, true, true, true,
-                null, null, true, null, null);
-    }
-
-    /**
-     * Create a Console with a custom JLine TerminalBuilder configuration.
-     *
-     * @param terminalConfigurer consumer to customize the TerminalBuilder
-     *                           (e.g., builder -&gt; builder.jna(true))
-     */
-    public Console(Consumer<TerminalBuilder> terminalConfigurer) {
-        this(null, null, null, null, false, null, false, null,
-                false, null, null, null, false, DEFAULT_TAB_SIZE, false, true, true, true,
-                null, null, true, null, terminalConfigurer);
+                null, null, true, null);
     }
 
     /**
@@ -329,6 +307,9 @@ public class Console {
     /**
      * Full constructor for Console.
      *
+     * <p>Console depends on JLine Terminal for all output and terminal capability queries.
+     * If no Terminal is provided, one is auto-created via TerminalBuilder.</p>
+     *
      * @param colorSystem     color system: "auto", "standard", "256", "truecolor", "windows", or null
      * @param forceTerminal   force terminal mode, or null to auto-detect
      * @param forceJupyter    force Jupyter mode, or null to auto-detect
@@ -336,10 +317,10 @@ public class Console {
      * @param softWrap        enable soft wrap (default false)
      * @param theme           theme to use, or null for default
      * @param stderr          write to stderr instead of stdout
-     * @param outputFile      output print stream, or null for default
+     * @param terminal        JLine Terminal, or null to auto-create
      * @param quiet           suppress all output
-     * @param width           console width, or null to auto-detect from JLine
-     * @param height          console height, or null to auto-detect from JLine
+     * @param width           console width, or null to auto-detect from Terminal
+     * @param height          console height, or null to auto-detect from Terminal
      * @param style           default style to apply to all output
      * @param noColor         disable colors, or null to auto-detect
      * @param tabSize         number of spaces per tab (default 8)
@@ -351,7 +332,6 @@ public class Console {
      * @param highlighter     default highlighter (unused in this simplified port)
      * @param safeBox         restrict box options for legacy Windows (default true)
      * @param legacyWindows   enable legacy Windows mode, or null to auto-detect
-     * @param terminalConfigurer consumer to customize JLine TerminalBuilder (e.g., set jna(true))
      */
     public Console(
             String colorSystem,
@@ -361,7 +341,7 @@ public class Console {
             boolean softWrap,
             Theme theme,
             boolean stderr,
-            PrintStream outputFile,
+            Terminal terminal,
             boolean quiet,
             Integer width,
             Integer height,
@@ -375,15 +355,13 @@ public class Console {
             Object logTimeFormat,
             Object highlighter,
             boolean safeBox,
-            Boolean legacyWindows,
-            Consumer<TerminalBuilder> terminalConfigurer
+            Boolean legacyWindows
     ) {
         this.forceTerminal = forceTerminal;
         this.forceJupyter = forceJupyter != null && forceJupyter;
         this.softWrap = softWrap;
         this.theme = theme;
         this.stderr = stderr;
-        this.outputFile = outputFile;
         this.quiet = quiet;
         this.width = width;
         this.height = height;
@@ -395,8 +373,18 @@ public class Console {
         this.highlightEnabled = highlight;
         this.safeBox = safeBox;
 
-        // Create JLine Terminal (gracefully degrade if unavailable)
-        this.terminal = createTerminal(terminalConfigurer);
+        // Initialize Terminal: explicit > auto-create via TerminalBuilder
+        Terminal resolvedTerminal;
+        if (terminal != null) {
+            resolvedTerminal = terminal;
+        } else {
+            Terminal built = null;
+            try {
+                built = TerminalBuilder.builder().system(true).dumb(true).build();
+            } catch (Exception ignored) {}
+            resolvedTerminal = built;
+        }
+        this.terminal = resolvedTerminal;
 
         // Detect legacy Windows
         this.legacyWindows = legacyWindows != null ? legacyWindows : false;
@@ -454,35 +442,14 @@ public class Console {
 
     /**
      * Check if this console is writing to a terminal.
-     * Uses JLine Terminal if available, falls back to System.console() check.
+     * Uses JLine Terminal type detection, or forceTerminal override.
      */
     public boolean isTerminal() {
         if (forceTerminal != null) {
             return forceTerminal;
         }
-        if (outputFile != null) {
-            return false;
-        }
-        // Use JLine terminal if available
         if (terminal != null) {
             return !Terminal.TYPE_DUMB.equals(terminal.getType());
-        }
-        // Fallback: Check FORCE_COLOR / TTY_COMPATIBLE environment variables
-        String forceColor = System.getenv("FORCE_COLOR");
-        if (forceColor != null && !forceColor.isEmpty()) {
-            return true;
-        }
-        String ttyCompat = System.getenv("TTY_COMPATIBLE");
-        if (ttyCompat != null && !ttyCompat.isEmpty()) {
-            return true;
-        }
-        // Fallback: System.console() exists and TERM is not "dumb"
-        if (System.console() != null) {
-            String term = System.getenv("TERM");
-            if (term != null && term.toLowerCase().equals(TERM_TYPE_DUMB)) {
-                return false;
-            }
-            return true;
         }
         return false;
     }
@@ -495,15 +462,21 @@ public class Console {
     }
 
     /**
+     * Get the Terminal instance used by this console.
+     */
+    public Terminal getOutput() {
+        return terminal;
+    }
+
+    /**
      * Check if this is a dumb terminal.
      */
     public boolean isDumbTerminal() {
-        String term = System.getenv("TERM");
-        if (term == null) {
-            return false;
+        if (terminal != null) {
+            String type = terminal.getType();
+            return Terminal.TYPE_DUMB.equals(type) || Terminal.TYPE_DUMB_COLOR.equals(type) || TERM_TYPE_UNKNOWN.equals(type);
         }
-        String lower = term.toLowerCase();
-        return isTerminal() && (TERM_TYPE_DUMB.equals(lower) || TERM_TYPE_UNKNOWN.equals(lower));
+        return true;
     }
 
     /**
@@ -539,8 +512,7 @@ public class Console {
 
     /**
      * Get the size of the console.
-     * Uses JLine Terminal if available for accurate size detection,
-     * falls back to environment variables COLUMNS/LINES, then defaults.
+     * Priority: explicitly set > Terminal size > defaults.
      */
     public ConsoleDimensions getSize() {
         // If both dimensions are explicitly set, use them
@@ -548,34 +520,17 @@ public class Console {
             return new ConsoleDimensions(width - (legacyWindows ? 1 : 0), height);
         }
 
-        int detectedWidth = DEFAULT_WIDTH;
-        int detectedHeight = DEFAULT_HEIGHT;
-
-        // Try JLine Terminal first (most reliable)
+        // Get from Terminal
+        int detectedWidth = 80;
+        int detectedHeight = 25;
         if (terminal != null) {
             try {
-                org.jline.terminal.Size size = terminal.getSize();
-                if (size != null && size.getColumns() > 0 && size.getRows() > 0) {
+                Size size = terminal.getSize();
+                if (size != null && size.getColumns() > 0) {
                     detectedWidth = size.getColumns();
                     detectedHeight = size.getRows();
                 }
-            } catch (Exception ignored) {
-                // JLine failed, fall through
-            }
-        }
-
-        // Fall back to environment variables
-        if (detectedWidth == DEFAULT_WIDTH) {
-            String columnsEnv = System.getenv("COLUMNS");
-            if (isDigits(columnsEnv)) {
-                detectedWidth = Integer.parseInt(columnsEnv);
-            }
-        }
-        if (detectedHeight == DEFAULT_HEIGHT) {
-            String linesEnv = System.getenv("LINES");
-            if (isDigits(linesEnv)) {
-                detectedHeight = Integer.parseInt(linesEnv);
-            }
+            } catch (Exception ignored) {}
         }
 
         int finalWidth = this.width != null ? this.width : detectedWidth;
@@ -1251,17 +1206,22 @@ public class Console {
         if (text == null || text.isEmpty()) {
             return;
         }
-        PrintStream out = outputFile != null ? outputFile : (stderr ? System.err : System.out);
-        out.print(text);
-        if (!text.endsWith("\n")) {
-            out.println();
+        if (terminal != null) {
+            terminal.writer().print(text);
         }
-        out.flush();
+        if (!text.endsWith("\n")) {
+            if (terminal != null) {
+                terminal.writer().println();
+            }
+        }
+        if (terminal != null) {
+            terminal.writer().flush();
+        }
     }
 
     /**
      * Print raw text without markup parsing and without trailing newline.
-     * Outputs directly to the underlying PrintStream, bypassing Text rendering.
+     * Outputs directly to the underlying Terminal, bypassing Text rendering.
      *
      * @param text the text to print (may contain ANSI escape sequences)
      */
@@ -1269,9 +1229,10 @@ public class Console {
         if (text == null || text.isEmpty()) {
             return;
         }
-        PrintStream out = outputFile != null ? outputFile : (stderr ? System.err : System.out);
-        out.print(text);
-        out.flush();
+        if (terminal != null) {
+            terminal.writer().print(text);
+            terminal.writer().flush();
+        }
     }
 
     /**
@@ -1343,6 +1304,37 @@ public class Console {
      */
     public void rule(Object title, Consumer<Rule.Config> configurer) {
         print(new Rule(title, configurer));
+    }
+
+    /**
+     * Print a panel with renderable content.
+     * Convenience method: {@code console.panel("Hello", "Title")}
+     *
+     * @param renderable the content to render inside the panel
+     */
+    public void panel(Object renderable) {
+        print(new Panel(renderable));
+    }
+
+    /**
+     * Print a panel with renderable content and a title.
+     *
+     * @param renderable the content to render inside the panel
+     * @param title      the panel title
+     */
+    public void panel(Object renderable, String title) {
+        print(new Panel(renderable, title));
+    }
+
+    /**
+     * Print a panel with Config-style configuration.
+     * <pre>{@code console.panel("Hello", cfg -> cfg.title("Title").borderStyle("green"))}</pre>
+     *
+     * @param renderable the content to render inside the panel
+     * @param configurer consumer to configure the Panel
+     */
+    public void panel(Object renderable, Consumer<Panel.Config> configurer) {
+        print(new Panel(renderable, configurer));
     }
 
     /**
@@ -1482,7 +1474,7 @@ public class Console {
                                int maxFrames) {
         Traceback.Trace trace = Traceback.fromThrowable(throwable, showLocals);
         Traceback traceback = Traceback.of(trace, cfg -> cfg
-                .width(width).codeWidth(88).extraLines(extraLines)
+                .width(width).codeWidth(0).extraLines(extraLines)
                 .theme(theme).wordWrap(wordWrap).showLocals(showLocals).maxFrames(maxFrames));
         print(traceback);
     }
@@ -1491,7 +1483,7 @@ public class Console {
      * Print a rich-formatted traceback for the given Throwable with default options.
      */
     public void printException(Throwable throwable) {
-        printException(throwable, 100, 3, "monokai", true, false, 100);
+        printException(throwable, 0, 3, "monokai", true, false, 100);
     }
 
     /**
@@ -1541,8 +1533,9 @@ public class Console {
         }
 
         try {
+            Terminal term = getTerminal();
             LineReader reader = LineReaderBuilder.builder()
-                    .terminal(terminal)
+                    .terminal(term)
                     .build();
             if (password) {
                 return reader.readLine(promptStr, '\0');
@@ -1863,32 +1856,7 @@ public class Console {
     // =========================================================================
 
     /**
-     * Create a JLine Terminal instance.
-     * Returns null if terminal creation fails (e.g., in constrained environments
-     * like Gradle execution, IDEs, or CI systems).
-     *
-     * @param terminalConfigurer optional consumer to customize the TerminalBuilder
-     * @return a Terminal instance, or null if creation failed
-     */
-    private Terminal createTerminal(Consumer<TerminalBuilder> terminalConfigurer) {
-        try {
-            TerminalBuilder builder = TerminalBuilder.builder()
-                    .system(true)
-                    .dumb(true); // allow dumb terminal fallback
-            if (terminalConfigurer != null) {
-                terminalConfigurer.accept(builder);
-            }
-            Terminal t = builder.build();
-            return t;
-        } catch (Exception e) {
-            // JLine Terminal creation failed — common in IDE/Gradle/CI environments.
-            // This is non-fatal; Console will fall back to env vars and defaults.
-            return null;
-        }
-    }
-
-    /**
-     * Detect the color system from environment.
+     * Detect the color system from environment variables and terminal type.
      */
     private ColorSystem detectColorSystem() {
         if (forceJupyter) {
@@ -1897,39 +1865,35 @@ public class Console {
         if (!isTerminal() || isDumbTerminal()) {
             return null;
         }
-
-        // Check COLORTERM for truecolor support
+        // 从环境变量检测颜色系统
         String colorTerm = System.getenv("COLORTERM");
         if (colorTerm != null) {
             String lower = colorTerm.trim().toLowerCase();
-            if (COLORTERM_TRUECOLOR.equals(lower) || COLORTERM_24BIT.equals(lower)) {
+            if ("truecolor".equals(lower) || "24bit".equals(lower)) {
                 return ColorSystem.TRUECOLOR;
             }
         }
-
         String term = System.getenv("TERM");
         if (term != null) {
             String lower = term.trim().toLowerCase();
             int hyphenIdx = lower.lastIndexOf('-');
             if (hyphenIdx >= 0) {
                 String colors = lower.substring(hyphenIdx + 1);
-                switch (colors) {
-                    case "kitty", "256color" -> {
-                        return ColorSystem.EIGHT_BIT;
-                    }
-                    case "16color" -> {
-                        return ColorSystem.STANDARD;
-                    }
+                if ("256color".equals(colors)) {
+                    return ColorSystem.EIGHT_BIT;
+                }
+                if ("16color".equals(colors)) {
+                    return ColorSystem.STANDARD;
                 }
             }
         }
-
-        // On Windows, modern terminals (Windows Terminal, ConEmu, etc.) support truecolor
-        // When forceTerminal is true, assume at least 256-color support
-        if (forceTerminal != null && forceTerminal) {
-            return ColorSystem.TRUECOLOR;
+        // 如果 Terminal 类型包含 "xterm" 或 "ansi"，默认 STANDARD
+        if (terminal != null && terminal.getType() != null) {
+            String type = terminal.getType().toLowerCase();
+            if (type.contains("xterm") || type.contains("ansi") || type.contains("vt100")) {
+                return ColorSystem.STANDARD;
+            }
         }
-
         return ColorSystem.STANDARD;
     }
 
@@ -2036,7 +2000,7 @@ public class Console {
     }
 
     /**
-     * Write the buffer to the output file.
+     * Write the buffer to the output.
      */
     private void writeBuffer() {
         lock.lock();
@@ -2053,43 +2017,41 @@ public class Console {
             if (bufferIndex == 0) {
                 String text = renderBuffer(new ArrayList<>(buffer));
                 if (!text.isEmpty()) {
-                    PrintStream out = outputFile;
-                    if (out == null) {
-                        out = stderr ? System.err : System.out;
-                    }
                     // Write in chunks to avoid issues with very long strings
-                    if (text.length() <= MAX_WRITE) {
-                        out.print(text);
-                    } else {
-                        List<String> batch = new ArrayList<>();
-                        int size = 0;
-                        int start = 0;
-                        for (int i = 0; i < text.length(); i++) {
-                            if (text.charAt(i) == '\n') {
-                                String line = text.substring(start, i + 1);
-                                if (size + line.length() > MAX_WRITE && !batch.isEmpty()) {
-                                    StringBuilder sb = new StringBuilder();
-                                    for (String s : batch) sb.append(s);
-                                    out.print(sb);
-                                    batch.clear();
-                                    size = 0;
+                    if (terminal != null) {
+                        if (text.length() <= MAX_WRITE) {
+                            terminal.writer().print(text);
+                        } else {
+                            List<String> batch = new ArrayList<>();
+                            int size = 0;
+                            int start = 0;
+                            for (int i = 0; i < text.length(); i++) {
+                                if (text.charAt(i) == '\n') {
+                                    String line = text.substring(start, i + 1);
+                                    if (size + line.length() > MAX_WRITE && !batch.isEmpty()) {
+                                        StringBuilder sb = new StringBuilder();
+                                        for (String s : batch) sb.append(s);
+                                        terminal.writer().print(sb.toString());
+                                        batch.clear();
+                                        size = 0;
+                                    }
+                                    batch.add(line);
+                                    size += line.length();
+                                    start = i + 1;
                                 }
-                                batch.add(line);
-                                size += line.length();
-                                start = i + 1;
+                            }
+                            // Remaining text after last newline
+                            if (start < text.length()) {
+                                batch.add(text.substring(start));
+                            }
+                            if (!batch.isEmpty()) {
+                                StringBuilder sb = new StringBuilder();
+                                for (String s : batch) sb.append(s);
+                                terminal.writer().print(sb.toString());
                             }
                         }
-                        // Remaining text after last newline
-                        if (start < text.length()) {
-                            batch.add(text.substring(start));
-                        }
-                        if (!batch.isEmpty()) {
-                            StringBuilder sb = new StringBuilder();
-                            for (String s : batch) sb.append(s);
-                            out.print(sb);
-                        }
+                        terminal.writer().flush();
                     }
-                    out.flush();
                 }
                 buffer.clear();
             }
@@ -2138,17 +2100,6 @@ public class Console {
             sb.append(' ');
         }
         return sb.toString();
-    }
-
-    /**
-     * Check if a string consists entirely of digits.
-     */
-    private static boolean isDigits(String s) {
-        if (s == null || s.isEmpty()) return false;
-        for (int i = 0; i < s.length(); i++) {
-            if (!Character.isDigit(s.charAt(i))) return false;
-        }
-        return true;
     }
 
     @Override

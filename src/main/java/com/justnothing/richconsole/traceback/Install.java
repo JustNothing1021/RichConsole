@@ -77,7 +77,7 @@ public final class Install {
      * @return the previous uncaught exception handler
      */
     public static UncaughtExceptionHandler install() {
-        return install(null, 100, 88, 3, "monokai", true, false, 100);
+        return install(null, 0, 0, 3, "monokai", true, false, 100);
     }
 
     /**
@@ -87,6 +87,6 @@ public final class Install {
      * @return the previous uncaught exception handler
      */
     public static UncaughtExceptionHandler install(Console console) {
-        return install(console, 100, 88, 3, "monokai", true, false, 100);
+        return install(console, 0, 0, 3, "monokai", true, false, 100);
     }
 }
