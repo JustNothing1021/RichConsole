@@ -36,6 +36,9 @@ gradle/wrapper/dists/
 # 但是Readme还是要提交的
 !/README.MD
 
+# 中文版也是
+!/README_CN.md
+
 # 还有一些神秘的日志文件
 *.log
 
