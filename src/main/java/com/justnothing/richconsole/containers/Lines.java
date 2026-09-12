@@ -19,6 +19,7 @@ public class Lines implements RichRenderable, Iterable<Object> {
     public static final String LEFT = "left";
     public static final String CENTER = "center";
     public static final String RIGHT = "right";
+    public static final String FULL = "full";
 
 
     private final List<Object> lines;
@@ -103,6 +104,51 @@ public class Lines implements RichRenderable, Iterable<Object> {
                     text.padLeft(width - cellLen);
                 }
             }
+        } else if (FULL.equals(method)) {
+            // Full justify: distribute extra spaces between words for all lines except the last.
+            // Ported from rich/containers.py Lines.justify() "full" branch.
+            for (int lineIdx = 0; lineIdx < lines.size() - 1; lineIdx++) {
+                Object lineObj = lines.get(lineIdx);
+                if (lineObj instanceof Text text) {
+                    text.rstrip();
+                    String plain = text.getPlain();
+                    if (plain.isEmpty()) continue;
+                    String[] words = plain.split(" ");
+                    if (words.length <= 1) {
+                        text.truncate(width, overflow, true);
+                        continue;
+                    }
+                    int totalWordLen = 0;
+                    for (String w : words) {
+                        totalWordLen += Cells.cellLen(w);
+                    }
+                    int gaps = words.length - 1;
+                    int totalSpaces = width - totalWordLen;
+                    if (totalSpaces <= gaps) {
+                        text.truncate(width, overflow, true);
+                        continue;
+                    }
+                    int baseSpaces = totalSpaces / gaps;
+                    int extraSpaces = totalSpaces % gaps;
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < words.length; i++) {
+                        sb.append(words[i]);
+                        if (i < gaps) {
+                            int spaces = baseSpaces + (i < extraSpaces ? 1 : 0);
+                            sb.append(" ".repeat(spaces));
+                        }
+                    }
+                    Text newText = text.blankCopy(sb.toString());
+                    lines.set(lineIdx, newText);
+                }
+            }
+            // Last line: left-align
+            if (!lines.isEmpty()) {
+                Object lastLine = lines.get(lines.size() - 1);
+                if (lastLine instanceof Text text) {
+                    text.truncate(width, overflow, true);
+                }
+            }
         }
     }
 
@@ -110,7 +156,7 @@ public class Lines implements RichRenderable, Iterable<Object> {
      * Justify lines within the given width using default overflow "fold".
      *
      * @param width  the width to justify to
-     * @param method justification method ("left", "center", "right")
+     * @param method justification method ("left", "center", "right", "full")
      */
     public void justify(int width, String method) {
         justify(width, method, "fold");

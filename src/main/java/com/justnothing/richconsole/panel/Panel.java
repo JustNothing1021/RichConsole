@@ -45,6 +45,7 @@ public class Panel implements RichRenderable {
     private final Integer width;
     private final Integer height;
     private final int[] padding; // top, right, bottom, left
+    private final Boolean safeBox; // null = use console default
 
     // =========================================================================
     // Config — fluent configuration for Panel construction
@@ -66,6 +67,7 @@ public class Panel implements RichRenderable {
         public Integer width;
         public Integer height;
         public int[] padding = new int[]{0, 1, 0, 1};
+        public Boolean safeBox;
 
         public Config title(Object title) { this.title = title; return this; }
         public Config titleAlign(String align) { this.titleAlign = align; return this; }
@@ -86,6 +88,7 @@ public class Panel implements RichRenderable {
         public Config padding(int all) {
             this.padding = new int[]{all, all, all, all}; return this;
         }
+        public Config safeBox(boolean safeBox) { this.safeBox = safeBox; return this; }
     }
 
     // =========================================================================
@@ -98,7 +101,8 @@ public class Panel implements RichRenderable {
     public Panel(Object renderable, Object title, String titleAlign,
                  Object subtitle, String subtitleAlign, Box box,
                  boolean expand, Object style, Object borderStyle,
-                 Integer width, Integer height, int[] padding) {
+                 Integer width, Integer height, int[] padding,
+                 Boolean safeBox) {
         this.renderable = renderable;
         this.title = title;
         this.titleAlign = titleAlign != null ? titleAlign : DEFAULT_TITLE_ALIGN;
@@ -111,6 +115,7 @@ public class Panel implements RichRenderable {
         this.width = width;
         this.height = height;
         this.padding = padding != null ? padding : new int[]{0, 1, 0, 1};
+        this.safeBox = safeBox;
     }
 
     /**
@@ -134,6 +139,7 @@ public class Panel implements RichRenderable {
         this.width = cfg.width;
         this.height = cfg.height;
         this.padding = cfg.padding;
+        this.safeBox = cfg.safeBox;
     }
 
     /**
@@ -158,25 +164,26 @@ public class Panel implements RichRenderable {
         this.width = cfg.width;
         this.height = cfg.height;
         this.padding = cfg.padding;
+        this.safeBox = cfg.safeBox;
     }
 
     public Panel(Object renderable, Object title, Object subtitle, Box box,
                  boolean expand, Object style, Object borderStyle,
                  Integer width, Integer height, int[] padding) {
         this(renderable, title, null, subtitle, null, box, expand, style,
-                borderStyle, width, height, padding);
+                borderStyle, width, height, padding, null);
     }
 
     public Panel(Object renderable) {
-        this(renderable, null, null, null, null, DEFAULT_BOX, true, null, null, null, null, null);
+        this(renderable, null, null, null, null, DEFAULT_BOX, true, null, null, null, null, null, null);
     }
 
     public Panel(Object renderable, Object title) {
-        this(renderable, title, null, null, null, DEFAULT_BOX, true, null, null, null, null, null);
+        this(renderable, title, null, null, null, DEFAULT_BOX, true, null, null, null, null, null, null);
     }
 
     public Panel(Object renderable, Object title, Object subtitle) {
-        this(renderable, title, null, subtitle, null, DEFAULT_BOX, true, null, null, null, null, null);
+        this(renderable, title, null, subtitle, null, DEFAULT_BOX, true, null, null, null, null, null, null);
     }
 
     // =========================================================================
@@ -211,7 +218,21 @@ public class Panel implements RichRenderable {
         // Build Panel directly from Config fields (not via constructor which may mis-resolve)
         return new Panel(renderable, cfg.title, cfg.titleAlign, cfg.subtitle,
                 cfg.subtitleAlign, cfg.box, cfg.expand, cfg.style, cfg.borderStyle,
-                cfg.width, cfg.height, cfg.padding);
+                cfg.width, cfg.height, cfg.padding, cfg.safeBox);
+    }
+
+    /**
+     * Create a Panel that fits its content width with a title and Config consumer.
+     * Matches Python rich's {@code Panel.fit(renderable, title=..., border_style=...)}.
+     */
+    public static Panel fit(Object renderable, Object title, Consumer<Config> configurer) {
+        Config cfg = new Config();
+        cfg.expand = false;
+        cfg.title = title;
+        configurer.accept(cfg);
+        return new Panel(renderable, cfg.title, cfg.titleAlign, cfg.subtitle,
+                cfg.subtitleAlign, cfg.box, cfg.expand, cfg.style, cfg.borderStyle,
+                cfg.width, cfg.height, cfg.padding, cfg.safeBox);
     }
 
     /**
@@ -236,6 +257,11 @@ public class Panel implements RichRenderable {
     public Iterable<?> richConsole(Console console, ConsoleOptions options) {
         Style borderStyleResolved = resolveBorderStyle(console);
         Style styleResolved = resolveStyle(console);
+
+        // Resolve safe box: null = use console default, matching Python rich's
+        // safe_box = console.safe_box if self.safe_box is None else self.safe_box
+        boolean safe = safeBox != null ? safeBox : console.isSafeBox();
+        Box resolvedBox = box != null ? box.substitute(options, safe) : null;
 
         int maxWidth = options.getMaxWidth();
         int panelWidth = resolvePanelWidth(console, options, maxWidth);
@@ -278,12 +304,12 @@ public class Panel implements RichRenderable {
         List<Segment> result = new ArrayList<>();
 
         // Top border with optional title
-        result.addAll(buildBorderLine(console, box.topLeft, box.top, box.topRight,
+        result.addAll(buildBorderLine(console, options, resolvedBox.topLeft, resolvedBox.top, resolvedBox.topRight,
                 innerWidth, title, titleAlign, borderStyleResolved, styleResolved));
 
         // Content lines with side borders and padding
-        Segment leftBorder = new Segment(box.midVertical != null ? box.midVertical : box.midLeft, borderStyleResolved);
-        Segment rightBorder = new Segment(box.midVertical != null ? box.midVertical : box.midRight, borderStyleResolved);
+        Segment leftBorder = new Segment(resolvedBox.midVertical != null ? resolvedBox.midVertical : resolvedBox.midLeft, borderStyleResolved);
+        Segment rightBorder = new Segment(resolvedBox.midVertical != null ? resolvedBox.midVertical : resolvedBox.midRight, borderStyleResolved);
         Segment leftPad = new Segment(spaces(padLeft), styleResolved);
         Segment rightPad = new Segment(spaces(padRight), styleResolved);
 
@@ -298,7 +324,7 @@ public class Panel implements RichRenderable {
         }
 
         // Bottom border with optional subtitle
-        result.addAll(buildBorderLine(console, box.bottomLeft, box.bottom, box.bottomRight,
+        result.addAll(buildBorderLine(console, options, resolvedBox.bottomLeft, resolvedBox.bottom, resolvedBox.bottomRight,
                 innerWidth, subtitle, subtitleAlign, borderStyleResolved, styleResolved));
 
         return result;
@@ -353,9 +379,9 @@ public class Panel implements RichRenderable {
     /**
      * Build a border line (top or bottom) with an optional title/subtitle embedded.
      * Supports left/center/right alignment, matching rich's align_text() logic.
+     * Uses console.render() for title rendering with proper style resolution (matching Python rich's approach).
      */
-    // TODO: use console.render() for title rendering with proper style resolution (Python uses console.render(title_text, child_options))
-    private List<Segment> buildBorderLine(Console console, String left, String horizontal,
+    private List<Segment> buildBorderLine(Console console, ConsoleOptions options, String left, String horizontal,
                                           String right, int innerWidth, Object titleObj,
                                           String align, Style borderStyle, Style textStyle) {
         List<Segment> segments = new ArrayList<>();
@@ -392,27 +418,33 @@ public class Panel implements RichRenderable {
                 if (leftBorderLen > 0) {
                     segments.add(new Segment(repeat(horizontal, leftBorderLen), borderStyle));
                 }
-                // Title portion
-                Text titleRenderable;
+                // Title portion — use console.render() for proper style resolution (matching Python rich)
+                Object titleRenderable;
                 if (titleObj instanceof Text) {
                     // Copy and add padding spaces around the title
                     Text original = ((Text) titleObj).copy();
-                    titleRenderable = new Text();
-                    titleRenderable.append(" ", borderStyle);
+                    Text titleTextObj = new Text();
+                    titleTextObj.append(" ", borderStyle);
                     // Copy all spans from original, adjusted for the leading space
                     for (Span span : original.getSpans()) {
-                        titleRenderable.stylize(span.style(), span.start() + 1, span.end() + 1);
+                        titleTextObj.stylize(span.style(), span.start() + 1, span.end() + 1);
                     }
-                    titleRenderable.append(original.getPlain(), borderStyle);
-                    titleRenderable.append(" ", borderStyle);
-                    titleRenderable.stylizeBefore(borderStyle, 0, titleRenderable.length());
+                    titleTextObj.append(original.getPlain(), borderStyle);
+                    titleTextObj.append(" ", borderStyle);
+                    titleTextObj.stylizeBefore(borderStyle, 0, titleTextObj.length());
+                    titleTextObj.setEnd("");
+                    titleTextObj.setNoWrap(true);
+                    titleRenderable = titleTextObj;
                 } else {
-                    titleRenderable = Text.styled(paddedTitle, borderStyle);
+                    Text titleTextObj = Text.styled(paddedTitle, borderStyle);
+                    titleTextObj.setEnd("");
+                    titleTextObj.setNoWrap(true);
+                    titleRenderable = titleTextObj;
                 }
-                titleRenderable.setEnd("");
-                titleRenderable.setNoWrap(true);
-                Iterable<Segment> titleSegments = titleRenderable.render(null, "");
-                for (Segment seg : titleSegments) {
+                int titleWidth = Math.max(1, titleCellLen);
+                ConsoleOptions titleOptions = options.updateWidth(titleWidth);
+                Iterable<Segment> renderedTitle = console.render(titleRenderable, titleOptions);
+                for (Segment seg : renderedTitle) {
                     if (!"\n".equals(seg.getText())) {
                         segments.add(seg);
                     }

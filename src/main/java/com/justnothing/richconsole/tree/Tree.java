@@ -4,13 +4,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
-import com.justnothing.richconsole.text.Text;
 import com.justnothing.richconsole.abc.RichRenderable;
+import com.justnothing.richconsole.cells.Cells;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
 import com.justnothing.richconsole.segment.Segment;
 import com.justnothing.richconsole.styled.Styled;
 import com.justnothing.richconsole.style.Style;
+import com.justnothing.richconsole.text.Text;
 
 /**
  * A renderable for a tree structure.
@@ -157,7 +158,7 @@ public class Tree implements RichRenderable {
                             TreeNode node, String prefix, boolean isLast,
                             boolean asciiOnly, Style guideStyleResolved,
                             List<Object> result) {
-        // TODO: use options for width constraints
+        // Calculate prefix width for width constraint on label (matching Python rich)
         String connector;
         if (prefix.isEmpty() && !hideRoot) {
             connector = "";
@@ -166,27 +167,39 @@ public class Tree implements RichRenderable {
                     ? (asciiOnly ? ASCII_LAST : LAST)
                     : (asciiOnly ? ASCII_BRANCH : BRANCH);
         }
+        String fullPrefix = prefix + connector;
+        int prefixWidth = fullPrefix.isEmpty() ? 0 : Cells.cellLen(fullPrefix);
+
+        // Render guide prefix + connector
+        if (!fullPrefix.isEmpty()) {
+            result.add(new Segment(fullPrefix, guideStyleResolved));
+        }
 
         Style nodeStyle = console.getStyle(style, "");
         if (node.getStyle() != null) {
             nodeStyle = nodeStyle.add(console.getStyle(node.getStyle()));
         }
 
-        // Render guide prefix + connector
-        if (!prefix.isEmpty() || !connector.isEmpty()) {
-            result.add(new Segment(prefix + connector, guideStyleResolved));
-        }
-
-        // Render label (without trailing newline - newline is added after)
+        // Render label with width constraint accounting for prefix (matching Python rich)
+        int availableWidth = Math.max(1, options.getMaxWidth() - prefixWidth);
+        ConsoleOptions labelOptions = options.updateWidth(availableWidth);
         Object label = node.getLabel();
         if (label instanceof String) {
-            // Create a Text with end="" to avoid trailing newline
-            Text labelText =
-                    Text.fromMarkup((String) label);
+            Text labelText = Text.fromMarkup((String) label);
             labelText.setEnd("");
-            result.add(new Styled(labelText, nodeStyle));
+            Iterable<Segment> segments = console.render(labelText, labelOptions);
+            for (Segment seg : segments) {
+                if (!"\n".equals(seg.getText())) {
+                    result.add(seg);
+                }
+            }
         } else {
-            result.add(new Styled(label, nodeStyle));
+            Iterable<Segment> segments = console.render(new Styled(label, nodeStyle), labelOptions);
+            for (Segment seg : segments) {
+                if (!"\n".equals(seg.getText())) {
+                    result.add(seg);
+                }
+            }
         }
         result.add(Segment.line());
 

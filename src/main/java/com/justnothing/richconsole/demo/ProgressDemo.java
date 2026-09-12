@@ -1,5 +1,11 @@
 package com.justnothing.richconsole.demo;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Arrays;
+import java.util.List;
+
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.progress.Progress;
 import com.justnothing.richconsole.status.Status;
@@ -9,7 +15,7 @@ import com.justnothing.richconsole.status.Status;
  */
 public class ProgressDemo {
 
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException, IOException {
         Console console = Console.of(cfg -> {});
 
         // =====================================================================
@@ -82,6 +88,34 @@ public class ProgressDemo {
                 console.log("[green]" + steps[i] + "[/green] completed");
                 Thread.sleep(300);
             }
+        }
+        console.println();
+
+        // =====================================================================
+        // 6. Progress.track() — iterate a Collection, total auto-detected
+        // =====================================================================
+        console.rule("Progress.track()");
+        List<String> steps2 = Arrays.asList(
+                "Build", "Test", "Package", "Upload", "Verify", "Configure", "Migrate", "Done!");
+        for (String step : Progress.track(steps2, cfg -> cfg.description("Deploying"))) {
+            Thread.sleep(250);
+        }
+        console.println();
+
+        // =====================================================================
+        // 7. Progress.wrapFile() — read a file, total from file length
+        // =====================================================================
+        console.rule("Progress.wrapFile()");
+        File file = new File("src/main/java/com/justnothing/richconsole/demo/ProgressDemo.java");
+        try (InputStream in = Progress.wrapFile(file, cfg -> cfg.description("Reading " + file.getName()))) {
+            byte[] buffer = new byte[2048];
+            int total = 0;
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                total += n;
+                Thread.sleep(1); // slow down so the progress is visible
+            }
+            console.log("[green]" + total + "[/green] bytes read");
         }
         console.println();
     }

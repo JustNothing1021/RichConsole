@@ -7,6 +7,7 @@ import java.util.List;
 import com.justnothing.richconsole.abc.RichRenderable;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
+import com.justnothing.richconsole.measure.Measurement;
 
 /**
  * A container for multiple renderables.
@@ -36,6 +37,20 @@ public class Renderables implements RichRenderable {
 
     public int size() {
         return renderables.size();
+    }
+
+    @Override
+    public Measurement richMeasure(Console console, ConsoleOptions options) {
+        // Measure the widest renderable among the contained items
+        int maxWidth = options.getMaxWidth();
+        int minWidth = 0;
+        for (Object renderable : renderables) {
+            Measurement m = Measurement.get(console, options, renderable);
+            minWidth = Math.max(minWidth, m.minimum());
+            // Don't accumulate maxWidth — just use the console width
+            // Each renderable can be as wide as the console allows
+        }
+        return new Measurement(minWidth, maxWidth);
     }
 
     @Override

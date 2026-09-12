@@ -36,11 +36,13 @@ public record Measurement(int minimum, int maximum) {
     }
 
     /**
-     * Create a new measurement with the given maximum.
+     * Create a new measurement with both min and max capped at the given width.
+     * Matches Python rich's with_maximum: {@code Measurement(min(minimum, width), min(maximum, width))}.
      */
     public Measurement withMaximum(int width) {
         int min = Math.min(minimum, width);
-        return new Measurement(min, width);
+        int max = Math.min(maximum, width);
+        return new Measurement(min, max);
     }
 
     /**
@@ -89,9 +91,44 @@ public record Measurement(int minimum, int maximum) {
             return new Measurement(0, 0);
         }
 
-        // String: measure by rendering
+        // String: measured by content width, not the full console width.
+        // Matches Python rich, which renders the str to Text and measures via
+        // Text.__rich_measure__: minimum = longest word, maximum = widest line.
         if (renderable instanceof String) {
-            return new Measurement(((String) renderable).length(), maxWidth);
+            String text = (String) renderable;
+            int maxLineLen = 0;
+            int lineStart = 0;
+            for (int i = 0; i <= text.length(); i++) {
+                if (i == text.length() || text.charAt(i) == '\n') {
+                    int lineLen = i - lineStart;
+                    if (lineLen > maxLineLen) {
+                        maxLineLen = lineLen;
+                    }
+                    lineStart = i + 1;
+                }
+            }
+
+            int maxWordLen = 0;
+            int currentWord = 0;
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == ' ' || c == '\n' || c == '\t') {
+                    if (currentWord > maxWordLen) {
+                        maxWordLen = currentWord;
+                    }
+                    currentWord = 0;
+                } else {
+                    currentWord++;
+                }
+            }
+            if (currentWord > maxWordLen) {
+                maxWordLen = currentWord;
+            }
+            // Whitespace-only text has no words; fall back to the widest line
+            if (maxWordLen == 0) {
+                maxWordLen = maxLineLen;
+            }
+            return new Measurement(Math.min(maxWordLen, maxWidth), Math.min(maxLineLen, maxWidth));
         }
 
         // RichRenderable with richMeasure

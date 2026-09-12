@@ -8,7 +8,6 @@ import java.util.List;
 import com.justnothing.richconsole.abc.RichRenderable;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
-import com.justnothing.richconsole.containers.Renderables;
 import com.justnothing.richconsole.table.Table;
 import com.justnothing.richconsole.text.Text;
 
@@ -87,7 +86,9 @@ public class LogRender implements RichRenderable {
         msgCol.setRatio(1.0);
         msgCol.setOverflow("fold");
         if (showPath && path != null) {
-            output.addColumn("", "log.path", null);
+            Table.TableColumn pathCol = output.addColumn("", "log.path", null);
+            pathCol.setMaxWidth(30);
+            pathCol.setJustify("right");
         }
 
         List<Object> row = new ArrayList<>();
@@ -108,7 +109,24 @@ public class LogRender implements RichRenderable {
             row.add(level != null ? level : "");
         }
 
-        row.add(new Renderables(renderables));
+        // Join renderables into a single Text cell, matching Python rich's
+        // behavior where log messages are rendered as a single text block.
+        // This avoids the Renderables wrapper which can cause rendering issues
+        // in grid tables.
+        Text joined = new Text("", null, null, null, "", null, null);
+        String sep = " ";
+        for (int i = 0; i < renderables.size(); i++) {
+            Object r = renderables.get(i);
+            if (i > 0) {
+                joined.append(sep);
+            }
+            if (r instanceof Text) {
+                joined.appendText((Text) r);
+            } else {
+                joined.append(String.valueOf(r));
+            }
+        }
+        row.add(joined);
 
         if (showPath && path != null) {
             Text pathText = new Text();

@@ -16,8 +16,10 @@ import com.justnothing.richconsole.text.Text;
 /**
  * Translate ANSI codes into styled Text.
  * Ported from rich/ansi.py AnsiDecoder.
+ *
+ * <p>Use {@link com.justnothing.richconsole.text.Text#fromAnsi(String)} to decode
+ * ANSI strings into styled Text objects.</p>
  */
-// TODO: integrate into Console.renderStr() for ANSI string handling (Python: Text.from_ansi() via AnsiDecoder)
 public class AnsiDecoder {
 
     /**

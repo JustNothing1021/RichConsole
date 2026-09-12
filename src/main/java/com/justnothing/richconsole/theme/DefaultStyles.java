@@ -46,6 +46,14 @@ public final class DefaultStyles {
         STYLES.put("inspect.help", Style.parse("cyan"));
         STYLES.put("inspect.doc", Style.parse("dim"));
         STYLES.put("inspect.value.border", Style.parse("green"));
+        // Java signature styles (modifiers blue, types green, names yellow,
+        // matching the VSCode-style palette used by syntax highlighting)
+        STYLES.put("inspect.modifier", Style.parse("blue"));
+        STYLES.put("inspect.type", Style.parse("green"));
+        STYLES.put("inspect.name", Style.parse("yellow"));
+        STYLES.put("inspect.keyword", Style.parse("blue"));
+        STYLES.put("inspect.punct", Style.parse("magenta"));
+        STYLES.put("inspect.sep", Style.parse("white"));
         STYLES.put("live.ellipsis", Style.parse("bold red"));
         STYLES.put("layout.tree.row", Style.parse("not dim red"));
         STYLES.put("layout.tree.column", Style.parse("not dim blue"));

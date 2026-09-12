@@ -1,14 +1,20 @@
 package com.justnothing.richconsole.console;
 
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.zip.Adler32;
 
 import com.justnothing.richconsole.json.JSON;
 import com.justnothing.richconsole.progress.Progress;
@@ -21,6 +27,8 @@ import org.jline.terminal.TerminalBuilder;
 
 import com.justnothing.richconsole.highlighter.ReprHighlighter;
 import com.justnothing.richconsole.abc.RichRenderable;
+import com.justnothing.richconsole.cells.Cells;
+import com.justnothing.richconsole.color.Color;
 import com.justnothing.richconsole.color.ColorSystem;
 import com.justnothing.richconsole.control.Control;
 import com.justnothing.richconsole.errors.MissingStyle;
@@ -39,6 +47,7 @@ import com.justnothing.richconsole.segment.Segment;
 import com.justnothing.richconsole.styled.Styled;
 import com.justnothing.richconsole.style.Style;
 import com.justnothing.richconsole.table.Table;
+import com.justnothing.richconsole.terminal.TerminalTheme;
 import com.justnothing.richconsole.text.Text;
 import com.justnothing.richconsole.theme.Theme;
 import com.justnothing.richconsole.theme.ThemeStack;
@@ -108,7 +117,7 @@ public class Console {
     private final Object style;
     private final boolean noColor;
     private final int tabSize;
-    private final boolean record;
+    private boolean record;
     private final boolean markupEnabled;
     private final boolean emojiEnabled;
     private final boolean highlightEnabled;
@@ -129,7 +138,6 @@ public class Console {
     private boolean isAltScreen = false;
     private final LogRender logRender;
     private final ReprHighlighter highlighter;
-    // TODO: Use logTimeFormat in log() method for formatting the time column
     private final Object logTimeFormat;
 
     public static class ConsoleConfig {
@@ -406,7 +414,15 @@ public class Console {
         this.themeStack = new ThemeStack(theme != null ? theme : new Theme());
 
         // Log render
-        this.logRender = new LogRender();
+        String logTimeFormatStr = null;
+        if (logTimeFormat instanceof String) {
+            logTimeFormatStr = (String) logTimeFormat;
+        }
+        this.logRender = new LogRender(
+                true, false, true,
+                logTimeFormatStr != null ? logTimeFormatStr : "'['yy-MM-dd HH:mm:ss']'",
+                true, 8
+        );
 
         // Highlighter
         if (highlighter instanceof ReprHighlighter) {
@@ -611,6 +627,31 @@ public class Console {
     }
 
     /**
+     * Start recording console output to the record buffer for later export.
+     * Equivalent to constructing the console with recording enabled.
+     */
+    public void beginRecord() {
+        record = true;
+    }
+
+    /**
+     * Stop recording and return the segments recorded so far, clearing the buffer.
+     *
+     * @return the segments recorded since recording began
+     */
+    public List<Segment> endRecord() {
+        record = false;
+        recordBufferLock.lock();
+        try {
+            List<Segment> segments = new ArrayList<>(recordBuffer);
+            recordBuffer.clear();
+            return segments;
+        } finally {
+            recordBufferLock.unlock();
+        }
+    }
+
+    /**
      * Check if safe box mode is enabled.
      */
     public boolean isSafeBox() {
@@ -629,6 +670,16 @@ public class Console {
      */
     public boolean isAltScreen() {
         return isAltScreen;
+    }
+
+    /**
+     * Get the log time format string.
+     */
+    public String getLogTimeFormat() {
+        if (logTimeFormat instanceof String) {
+            return (String) logTimeFormat;
+        }
+        return null;
     }
 
     // =========================================================================
@@ -1383,8 +1434,10 @@ public class Console {
             renderables = styled;
         }
 
-        // Get caller info (skip log() frame and callerFrameInfo frame)
-        String[] callerInfo = callerFrameInfo(3);
+        // Get caller info: skip the log machinery frames and pick the first
+        // real caller (works on both HotSpot and Android/ART, whose stack
+        // layouts differ due to inlining / varargs bridging / hidden frames)
+        String[] callerInfo = callerFrameInfo();
         String filename = callerInfo[0];
         Integer lineNo = callerInfo[1] != null ? Integer.parseInt(callerInfo[1]) : null;
         String path = filename;
@@ -1403,15 +1456,31 @@ public class Console {
     /**
      * Get caller frame information for log output.
      * Returns [filename, lineNumber].
+     *
+     * <p>Walks the stack from the top and returns the first frame that is not
+     * part of the log machinery itself (JVM internals + Console's own
+     * callerFrameInfo / log(...) methods). A fixed offset like
+     * {@code stack[skipFrames + 2]} is fragile: Android/ART reports a
+     * different stack layout than HotSpot (method inlining, varargs bridging
+     * and hidden frames change the depth), which made log() point at
+     * Console.java itself. Skipping known internal frames works on both.
      */
-    private String[] callerFrameInfo(int skipFrames) {
+    private String[] callerFrameInfo() {
         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-        // stack[0] = getStackTrace, stack[1] = callerFrameInfo,
-        // stack[2] = log, stack[3+] = actual caller
-        int index = skipFrames + 1; // +1 for callerFrameInfo itself
-        if (index < stack.length) {
-            StackTraceElement caller = stack[index];
-            return new String[]{caller.getFileName(), String.valueOf(caller.getLineNumber())};
+        String consoleClassName = Console.class.getName();
+        for (StackTraceElement frame : stack) {
+            String className = frame.getClassName();
+            // 跳过 JVM/ART 内部帧。Android 上 Thread.getStackTrace() 的栈顶可能
+            // 出现 dalvik.system.VMStack 等 native 帧（行号 -2），必须一并跳过。
+            if (className.startsWith("java.") || className.startsWith("jdk.")
+                    || className.startsWith("sun.") || className.startsWith("android.")
+                    || className.startsWith("dalvik.") || className.startsWith("libcore.")) {
+                continue; // Thread.getStackTrace() 及 JVM/ART 内部帧
+            }
+            if (className.equals(consoleClassName)) {
+                continue; // callerFrameInfo + log(Object...) / log(Object[],...)
+            }
+            return new String[]{frame.getFileName(), String.valueOf(frame.getLineNumber())};
         }
         return new String[]{"<unknown>", "0"};
     }
@@ -1840,15 +1909,410 @@ public class Console {
      * Save exported text to a file path.
      */
     public void saveText(String path, boolean clear, boolean styles) {
-        String text = exportText(clear, styles);
+        writeTextFile(path, exportText(clear, styles));
+    }
+
+    /**
+     * Export recorded content as HTML.
+     *
+     * @param clear        clear the record buffer after exporting
+     * @param theme        the terminal theme, or null for the default theme
+     * @param codeFormat   HTML template (Java format string with four %s placeholders:
+     *                     stylesheet, foreground, background, code), or null for the default template
+     * @param inlineStyles true to inline styles into spans, false to use CSS classes
+     * @return the exported HTML
+     */
+    public String exportHtml(boolean clear, TerminalTheme theme, String codeFormat, boolean inlineStyles) {
+        if (!record) {
+            throw new IllegalStateException("To export console contents set record=True in the constructor");
+        }
+        TerminalTheme resolvedTheme = theme != null ? theme : TerminalTheme.DEFAULT;
+        String renderCodeFormat = codeFormat != null ? codeFormat : ExportFormat.CONSOLE_HTML_FORMAT;
+        List<String> fragments = new ArrayList<>();
+
+        recordBufferLock.lock();
         try {
-            java.io.File file = new java.io.File(path);
-            java.io.FileWriter writer = new java.io.FileWriter(file);
-            writer.write(text);
+            Iterable<Segment> simplified = Segment.simplify(recordBuffer);
+            String stylesheet = "";
+            if (inlineStyles) {
+                for (Segment segment : Segment.filterControl(simplified, false)) {
+                    String text = ExportFormat.escapeHtml(segment.getText());
+                    Style style = segment.getStyle();
+                    if (style != null) {
+                        String rule = style.getHtmlStyle(resolvedTheme);
+                        if (style.getLink() != null) {
+                            text = "<a href=\"" + style.getLink() + "\">" + text + "</a>";
+                        }
+                        if (!rule.isEmpty()) {
+                            text = "<span style=\"" + rule + "\">" + text + "</span>";
+                        }
+                    }
+                    fragments.add(text);
+                }
+            } else {
+                Map<String, Integer> styleNumbers = new LinkedHashMap<>();
+                for (Segment segment : Segment.filterControl(simplified, false)) {
+                    String text = ExportFormat.escapeHtml(segment.getText());
+                    Style style = segment.getStyle();
+                    if (style != null) {
+                        String rule = style.getHtmlStyle(resolvedTheme);
+                        int styleNumber = styleNumbers.computeIfAbsent(rule, key -> styleNumbers.size() + 1);
+                        if (style.getLink() != null) {
+                            text = "<a class=\"r" + styleNumber + "\" href=\"" + style.getLink() + "\">" + text + "</a>";
+                        } else {
+                            text = "<span class=\"r" + styleNumber + "\">" + text + "</span>";
+                        }
+                    }
+                    fragments.add(text);
+                }
+                List<String> stylesheetRules = new ArrayList<>();
+                for (Map.Entry<String, Integer> entry : styleNumbers.entrySet()) {
+                    if (!entry.getKey().isEmpty()) {
+                        stylesheetRules.add(".r" + entry.getValue() + " {" + entry.getKey() + "}");
+                    }
+                }
+                stylesheet = String.join("\n", stylesheetRules);
+            }
+
+            String renderedCode = String.format(renderCodeFormat,
+                    stylesheet,
+                    resolvedTheme.getForegroundColor().hex(),
+                    resolvedTheme.getBackgroundColor().hex(),
+                    String.join("", fragments));
+            if (clear) {
+                recordBuffer.clear();
+            }
+            return renderedCode;
+        } finally {
+            recordBufferLock.unlock();
+        }
+    }
+
+    /**
+     * Export HTML with default settings.
+     */
+    public String exportHtml() {
+        return exportHtml(true, null, null, false);
+    }
+
+    /**
+     * Save exported HTML to a file path.
+     */
+    public void saveHtml(String path, boolean clear, TerminalTheme theme, String codeFormat, boolean inlineStyles) {
+        writeTextFile(path, exportHtml(clear, theme, codeFormat, inlineStyles));
+    }
+
+    /**
+     * Export recorded content as SVG.
+     *
+     * @param title           the title shown in the output image
+     * @param theme           the terminal theme, or null for the SVG export theme
+     * @param clear           clear the record buffer after exporting
+     * @param codeFormat      SVG template (Java format string with fifteen %s placeholders),
+     *                        or null for the default template
+     * @param fontAspectRatio width-to-height ratio of the font (default 0.61)
+     * @param uniqueId        id prefix for SVG elements, or null to compute one from the content
+     * @return the exported SVG
+     */
+    public String exportSvg(String title, TerminalTheme theme, boolean clear, String codeFormat,
+                            double fontAspectRatio, String uniqueId) {
+        if (!record) {
+            throw new IllegalStateException("To export console contents set record=True in the constructor");
+        }
+        TerminalTheme resolvedTheme = theme != null ? theme : TerminalTheme.SVG_EXPORT;
+        String renderCodeFormat = codeFormat != null ? codeFormat : ExportFormat.CONSOLE_SVG_FORMAT;
+        Map<Style, String> styleCache = new HashMap<>();
+
+        List<Segment> segments = new ArrayList<>();
+        recordBufferLock.lock();
+        try {
+            for (Segment segment : Segment.filterControl(recordBuffer, false)) {
+                segments.add(segment);
+            }
+            if (clear) {
+                recordBuffer.clear();
+            }
+        } finally {
+            recordBufferLock.unlock();
+        }
+
+        if (uniqueId == null) {
+            StringBuilder sb = new StringBuilder();
+            for (Segment segment : segments) {
+                sb.append(segment);
+            }
+            sb.append(title);
+            Adler32 adler = new Adler32();
+            adler.update(sb.toString().getBytes(StandardCharsets.UTF_8));
+            uniqueId = "terminal-" + adler.getValue();
+        }
+
+        int width = getWidth();
+        double charHeight = 20;
+        double charWidth = charHeight * fontAspectRatio;
+        double lineHeight = charHeight * 1.22;
+
+        double marginTop = 1;
+        double marginRight = 1;
+        double marginBottom = 1;
+        double marginLeft = 1;
+        double paddingTop = 40;
+        double paddingRight = 8;
+        double paddingBottom = 8;
+        double paddingLeft = 8;
+
+        double paddingWidth = paddingLeft + paddingRight;
+        double paddingHeight = paddingTop + paddingBottom;
+        double marginWidth = marginLeft + marginRight;
+        double marginHeight = marginTop + marginBottom;
+
+        List<String> textBackgrounds = new ArrayList<>();
+        List<String> textGroup = new ArrayList<>();
+        Map<String, Integer> classes = new LinkedHashMap<>();
+        int styleNo = 1;
+
+        List<List<Segment>> splitLines = new ArrayList<>();
+        for (List<Segment> line : Segment.splitAndCropLines(segments, width, null, true, true)) {
+            splitLines.add(line);
+        }
+        int y = -1;
+        for (List<Segment> line : splitLines) {
+            y++;
+            int x = 0;
+            for (Segment segment : line) {
+                Style style = segment.getStyle();
+                if (style == null) {
+                    style = Style.nullStyle();
+                }
+                String rules = svgStyleFor(style, resolvedTheme, styleCache);
+                Integer ruleNumber = classes.get(rules);
+                if (ruleNumber == null) {
+                    classes.put(rules, styleNo);
+                    ruleNumber = styleNo;
+                    styleNo++;
+                }
+                String className = "r" + ruleNumber;
+
+                boolean hasBackground;
+                String background;
+                Boolean reverse = style.reverse();
+                if (reverse != null && reverse) {
+                    hasBackground = true;
+                    background = (style.getColor() == null ? resolvedTheme.getForegroundColor()
+                            : style.getColor().getTruecolor(resolvedTheme, true)).hex();
+                } else {
+                    Color bgcolor = style.getBgcolor();
+                    hasBackground = bgcolor != null && !bgcolor.isDefault();
+                    background = (bgcolor == null ? resolvedTheme.getBackgroundColor()
+                            : bgcolor.getTruecolor(resolvedTheme, false)).hex();
+                }
+
+                String text = segment.getText();
+                int textLength = Cells.cellLen(text);
+                if (hasBackground) {
+                    Map<String, Object> attrs = new LinkedHashMap<>();
+                    attrs.put("fill", background);
+                    attrs.put("x", x * charWidth);
+                    attrs.put("y", y * lineHeight + 1.5);
+                    attrs.put("width", charWidth * textLength);
+                    attrs.put("height", lineHeight + 0.25);
+                    attrs.put("shape_rendering", "crispEdges");
+                    textBackgrounds.add(makeTag("rect", null, attrs));
+                }
+
+                if (!isAllSpaces(text)) {
+                    Map<String, Object> attrs = new LinkedHashMap<>();
+                    attrs.put("_class", uniqueId + "-" + className);
+                    attrs.put("x", x * charWidth);
+                    attrs.put("y", y * lineHeight + charHeight);
+                    attrs.put("textLength", charWidth * text.length());
+                    attrs.put("clip_path", "url(#" + uniqueId + "-line-" + y + ")");
+                    textGroup.add(makeTag("text", ExportFormat.escapeHtml(text).replace(" ", "&#160;"), attrs));
+                }
+                x += textLength;
+            }
+        }
+
+        List<String> clipPaths = new ArrayList<>();
+        for (int lineNo = 0; lineNo < y; lineNo++) {
+            double offset = lineNo * lineHeight + 1.5;
+            Map<String, Object> attrs = new LinkedHashMap<>();
+            attrs.put("x", 0);
+            attrs.put("y", offset);
+            attrs.put("width", charWidth * width);
+            attrs.put("height", lineHeight + 0.25);
+            clipPaths.add("<clipPath id=\"" + uniqueId + "-line-" + lineNo + "\">\n    "
+                    + makeTag("rect", null, attrs)
+                    + "\n            </clipPath>");
+        }
+        String lines = String.join("\n", clipPaths);
+
+        List<String> styleRules = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : classes.entrySet()) {
+            styleRules.add("." + uniqueId + "-r" + entry.getValue() + " { " + entry.getKey() + " }");
+        }
+        String styles = String.join("\n", styleRules);
+        String backgrounds = String.join("", textBackgrounds);
+        String matrix = String.join("", textGroup);
+
+        double terminalWidth = Math.ceil(width * charWidth + paddingWidth);
+        double terminalHeight = (y + 1) * lineHeight + paddingHeight;
+
+        Map<String, Object> chromeAttrs = new LinkedHashMap<>();
+        chromeAttrs.put("fill", resolvedTheme.getBackgroundColor().hex());
+        chromeAttrs.put("stroke", "rgba(255,255,255,0.35)");
+        chromeAttrs.put("stroke_width", "1");
+        chromeAttrs.put("x", marginLeft);
+        chromeAttrs.put("y", marginTop);
+        chromeAttrs.put("width", terminalWidth);
+        chromeAttrs.put("height", terminalHeight);
+        chromeAttrs.put("rx", 8);
+        String chrome = makeTag("rect", null, chromeAttrs);
+
+        String titleColor = resolvedTheme.getForegroundColor().hex();
+        if (title != null && !title.isEmpty()) {
+            Map<String, Object> titleAttrs = new LinkedHashMap<>();
+            titleAttrs.put("_class", uniqueId + "-title");
+            titleAttrs.put("fill", titleColor);
+            titleAttrs.put("text_anchor", "middle");
+            titleAttrs.put("x", Math.floor(terminalWidth / 2));
+            titleAttrs.put("y", marginTop + charHeight + 6);
+            chrome += makeTag("text", ExportFormat.escapeHtml(title).replace(" ", "&#160;"), titleAttrs);
+        }
+        chrome += """
+                <g transform="translate(26,22)">
+                <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+                <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+                <circle cx="44" cy="0" r="7" fill="#28c840"/>
+                </g>
+            """;
+
+        return String.format(renderCodeFormat,
+                uniqueId,
+                formatSvgNumber(charWidth),
+                formatSvgNumber(charHeight),
+                formatSvgNumber(lineHeight),
+                formatSvgNumber(charWidth * width - 1),
+                formatSvgNumber((y + 1) * lineHeight - 1),
+                formatSvgNumber(terminalWidth + marginWidth),
+                formatSvgNumber(terminalHeight + marginHeight),
+                formatSvgNumber(marginLeft + paddingLeft),
+                formatSvgNumber(marginTop + paddingTop),
+                styles,
+                chrome,
+                backgrounds,
+                matrix,
+                lines);
+    }
+
+    /**
+     * Export SVG with default settings.
+     */
+    public String exportSvg() {
+        return exportSvg("RichConsole", null, true, null, 0.61, null);
+    }
+
+    /**
+     * Save exported SVG to a file path.
+     */
+    public void saveSvg(String path, String title, TerminalTheme theme, boolean clear,
+                        String codeFormat, double fontAspectRatio, String uniqueId) {
+        writeTextFile(path, exportSvg(title, theme, clear, codeFormat, fontAspectRatio, uniqueId));
+    }
+
+    /**
+     * Time a block of work, printing the elapsed seconds when the returned handle is closed.
+     *
+     * <pre>{@code
+     * try (AutoCloseable timer = console.time("compute")) {
+     *     doWork();
+     * }
+     * }</pre>
+     *
+     * @param message the message printed with the elapsed time
+     * @return an {@link AutoCloseable} that prints {@code message: X.XXXs} on close
+     */
+    public AutoCloseable time(String message) {
+        long start = System.nanoTime();
+        return () -> {
+            double elapsed = (System.nanoTime() - start) / 1_000_000_000.0;
+            println(message + ": " + String.format("%.3f", elapsed) + "s");
+        };
+    }
+
+    private void writeTextFile(String path, String content) {
+        try {
+            File file = new File(path);
+            FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8);
+            writer.write(content);
             writer.close();
         } catch (IOException e) {
-            throw new RuntimeException("Failed to save text to " + path, e);
+            throw new RuntimeException("Failed to save to " + path, e);
         }
+    }
+
+    private static String svgStyleFor(Style style, TerminalTheme theme, Map<Style, String> cache) {
+        String cached = cache.get(style);
+        if (cached != null) {
+            return cached;
+        }
+        String css = style.getSvgStyle(theme);
+        cache.put(style, css);
+        return css;
+    }
+
+    private static boolean isAllSpaces(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) != ' ') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Format a number like Python's {@code format(value, "g")} (C-style {@code %g}
+     * with 6 significant digits, trailing zeros stripped), e.g.
+     * {@code 220.80000000000001} to {@code "220.8"}.
+     */
+    private static String formatSvgNumber(double value) {
+        String formatted = String.format(Locale.ROOT, "%g", value);
+        int exponentIndex = formatted.indexOf('e');
+        if (exponentIndex == -1) {
+            exponentIndex = formatted.indexOf('E');
+        }
+        String mantissa = exponentIndex == -1 ? formatted : formatted.substring(0, exponentIndex);
+        String exponent = exponentIndex == -1 ? "" : formatted.substring(exponentIndex);
+        if (mantissa.contains(".")) {
+            mantissa = mantissa.replaceAll("0+$", "");
+            mantissa = mantissa.replaceAll("\\.$", "");
+        }
+        return mantissa + exponent;
+    }
+
+    private static String makeTag(String name, String content, Map<String, Object> attribs) {
+        StringBuilder tag = new StringBuilder("<").append(name);
+        for (Map.Entry<String, Object> entry : attribs.entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith("_")) {
+                key = key.substring(1);
+            }
+            key = key.replace('_', '-');
+            tag.append(' ').append(key).append("=\"").append(stringify(entry.getValue())).append('"');
+        }
+        if (content != null) {
+            tag.append('>').append(content).append("</").append(name).append('>');
+        } else {
+            tag.append("/>");
+        }
+        return tag.toString();
+    }
+
+    private static String stringify(Object value) {
+        if (value instanceof Double || value instanceof Float) {
+            return formatSvgNumber(((Number) value).doubleValue());
+        }
+        return String.valueOf(value);
     }
 
     // =========================================================================
@@ -1887,9 +2351,18 @@ public class Console {
                 }
             }
         }
-        // 如果 Terminal 类型包含 "xterm" 或 "ansi"，默认 STANDARD
+        // 如果 Terminal 类型包含颜色后缀，据此判断
         if (terminal != null && terminal.getType() != null) {
             String type = terminal.getType().toLowerCase();
+            if (type.endsWith("256color") || type.contains("-256color")) {
+                return ColorSystem.EIGHT_BIT;
+            }
+            if (type.endsWith("16color") || type.contains("-16color")) {
+                return ColorSystem.STANDARD;
+            }
+            if (type.contains("truecolor") || type.contains("direct")) {
+                return ColorSystem.TRUECOLOR;
+            }
             if (type.contains("xterm") || type.contains("ansi") || type.contains("vt100")) {
                 return ColorSystem.STANDARD;
             }

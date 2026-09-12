@@ -8,6 +8,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.justnothing.richconsole.abc.RichRenderable;
+import com.justnothing.richconsole.ansi.AnsiDecoder;
 import com.justnothing.richconsole.cells.Cells;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
@@ -256,6 +257,20 @@ public class Text implements RichRenderable {
         Text text = new Text(plainBuilder.toString(), style);
         text._spans = spans;
         return text;
+    }
+
+    /**
+     * Create a Text object from a string containing ANSI escape codes.
+     * Ported from Python rich's Text.from_ansi().
+     *
+     * @param text a string containing ANSI escape codes
+     * @return a Text instance with styles decoded from ANSI codes
+     */
+    public static Text fromAnsi(String text) {
+        AnsiDecoder decoder = new AnsiDecoder();
+        Text joiner = new Text("\n", (Object) null);
+        List<Text> decodedLines = decoder.decode(text);
+        return joiner.join(decodedLines);
     }
 
     /**
@@ -849,7 +864,7 @@ public class Text implements RichRenderable {
             }
             if (wsCount > 0) {
                 int cropAmount = Math.min(wsCount, excess);
-                rightCrop(textLength - cropAmount);
+                rightCrop(cropAmount);
             }
         }
     }
@@ -959,9 +974,15 @@ public class Text implements RichRenderable {
         if (texts == null || texts.isEmpty()) {
             return new Text("");
         }
+        // Inherit style from the first text if separator has no style
+        // (matches Python rich's behavior where joined text preserves original styles)
+        Object inheritedStyle = separator.style;
+        if (inheritedStyle == null && !texts.isEmpty()) {
+            inheritedStyle = texts.get(0).style;
+        }
         // Start with a blank copy of the separator (like Python's blank_copy),
         // which preserves separator's metadata (end, justify, etc.)
-        Text result = new Text("", separator.style, separator.justify,
+        Text result = new Text("", inheritedStyle, separator.justify,
                 separator.overflow, separator.end, separator.tabSize, separator.noWrap);
         boolean first = true;
         for (Text text : texts) {
@@ -1176,11 +1197,17 @@ public class Text implements RichRenderable {
             }
         }
 
-        // Apply justify if specified
+        // Apply justify if specified (but not "full" on the last line)
         if (justify != null && !justify.isEmpty()) {
+            int lastIdx = wrappedLines.size() - 1;
             for (int i = 0; i < wrappedLines.size(); i++) {
                 Text line = (Text) wrappedLines.get(i);
-                line.align(justify, width, null);
+                // Don't apply "full" justify to the last line
+                String lineJustify = justify;
+                if ("full".equals(justify) && i == lastIdx) {
+                    lineJustify = "left";  // Last line: left-align instead of full justify
+                }
+                line.align(lineJustify, width, null);
             }
         }
 
@@ -1331,8 +1358,36 @@ public class Text implements RichRenderable {
         }
 
         // Cap maxWidth to the console's available width
-        if (options != null && options.getMaxWidth() > 0) {
-            maxWidth = Math.min(maxWidth, options.getMaxWidth());
+        int consoleWidth = (options != null && options.getMaxWidth() > 0) ? options.getMaxWidth() : Integer.MAX_VALUE;
+        maxWidth = Math.min(maxWidth, consoleWidth);
+
+        // If text is longer than console width and wrapping is allowed,
+        // minWidth should be the smallest possible wrapped width (e.g., longest word length)
+        // Matches Python rich's behavior for flexible text
+        if (noWrap == null || !noWrap) {
+            if (maxWidth < minWidth) {
+                // Text will be wrapped; calculate minimum wrap width
+                // Find longest word (heuristic for minimum wrap width)
+                int longestWord = 1;
+                int currentWord = 0;
+                for (int i = 0; i < plain.length(); i++) {
+                    char c = plain.charAt(i);
+                    if (c == ' ' || c == '\n' || c == '\t') {
+                        if (currentWord > longestWord) {
+                            longestWord = currentWord;
+                        }
+                        currentWord = 0;
+                    } else {
+                        currentWord++;
+                    }
+                }
+                if (currentWord > longestWord) {
+                    longestWord = currentWord;
+                }
+                // minWidth = longest word (text can't wrap narrower than this)
+                // But ensure minWidth <= maxWidth
+                minWidth = Math.min(longestWord, maxWidth);
+            }
         }
 
         return new Measurement(minWidth, maxWidth);
@@ -1377,7 +1432,7 @@ public class Text implements RichRenderable {
             if (isEnd || isNewline) {
                 // Render the current line segment(s)
                 if (i > lineStart) {
-                    renderLine(segments, plain, lineStart, i, spanRanges, spanStyles);
+                    renderLine(segments, plain, lineStart, i, spanRanges, spanStyles, baseStyle);
                 }
 
                 if (isNewline) {
@@ -1668,7 +1723,7 @@ public class Text implements RichRenderable {
      * Render a single line of text with spans applied.
      */
     private void renderLine(List<Segment> segments, String plain, int lineStart, int lineEnd,
-                            List<int[]> spanRanges, List<Style> spanStyles) {
+                            List<int[]> spanRanges, List<Style> spanStyles, Style baseStyle) {
         // Collect all style-change points within [lineStart, lineEnd)
         List<int[]> events = new ArrayList<>();
         for (int i = 0; i < spanRanges.size(); i++) {
@@ -1705,8 +1760,7 @@ public class Text implements RichRenderable {
             // Emit segment for text before next event
             if (pos < nextEventPos) {
                 String text = plain.substring(pos, nextEventPos);
-                Style currentStyle = computeCurrentStyle(activeSpans, spanStyles,
-                        resolveStyle(style));
+                Style currentStyle = computeCurrentStyle(activeSpans, spanStyles, baseStyle);
                 segments.add(new Segment(text, currentStyle));
                 pos = nextEventPos;
             }

@@ -168,6 +168,7 @@ public class Table implements RichRenderable {
     private Integer width;
     private boolean collapsePadding;
     private boolean padEdge;
+    private Boolean safeBox; // null = use console default
 
     // =========================================================================
     // Config — fluent configuration for Table construction
@@ -195,6 +196,7 @@ public class Table implements RichRenderable {
         public Integer width;
         public boolean collapsePadding = false;
         public boolean padEdge = true;
+        public Boolean safeBox;
 
         public Config title(Object title) {
             this.title = title;
@@ -275,6 +277,11 @@ public class Table implements RichRenderable {
             this.padEdge = padEdge;
             return this;
         }
+
+        public Config safeBox(boolean safeBox) {
+            this.safeBox = safeBox;
+            return this;
+        }
     }
 
     // =========================================================================
@@ -300,6 +307,7 @@ public class Table implements RichRenderable {
         this.width = null;
         this.collapsePadding = false;
         this.padEdge = true;
+        this.safeBox = null;
     }
 
     /**
@@ -329,6 +337,7 @@ public class Table implements RichRenderable {
         this.width = cfg.width;
         this.collapsePadding = cfg.collapsePadding;
         this.padEdge = cfg.padEdge;
+        this.safeBox = cfg.safeBox;
     }
 
     /**
@@ -370,7 +379,13 @@ public class Table implements RichRenderable {
      * padding.
      * Matches Python rich's Table.grid(padding=(vPad, hPad)).
      *
-     * @param vPadding vertical padding between rows (not yet supported; reserved for future use)
+     * <p>Note: The Table class currently supports a single padding value,
+     * applied as horizontal padding between columns. The {@code vPadding}
+     * parameter is accepted for API compatibility with Python rich but
+     * is not yet used (vertical padding between rows is not supported).
+     * Use {@code hPadding} to control horizontal spacing between cells.</p>
+     *
+     * @param vPadding vertical padding between rows (not yet supported)
      * @param hPadding horizontal padding between columns
      * @param expand   whether to expand to full console width
      * @return a new Table configured as a grid
@@ -388,10 +403,6 @@ public class Table implements RichRenderable {
         table.expand = expand;
         table.style = null;
         table.borderStyle = null;
-        // vPadding is reserved for future use (vertical padding between rows)
-        if (vPadding > 0) {
-            table.padding = vPadding; // use vPadding as overall padding until separate v/h padding is supported
-        }
         return table;
     }
 
@@ -428,6 +439,13 @@ public class Table implements RichRenderable {
     public void addRow(Object... cells) {
         List<Object> row = new ArrayList<>();
         Collections.addAll(row, cells);
+        // Python rich auto-creates implicit columns when a row has more cells
+        // than the current columns, so extra cells are never dropped from the
+        // layout (e.g. Scope's "key = value" grid where only the key column is
+        // declared explicitly).
+        while (row.size() > columns.size()) {
+            columns.add(new TableColumn(null));
+        }
         rows.add(row);
     }
 
@@ -571,6 +589,14 @@ public class Table implements RichRenderable {
         this.padEdge = padEdge;
     }
 
+    public Boolean getSafeBox() {
+        return safeBox;
+    }
+
+    public void setSafeBox(Boolean safeBox) {
+        this.safeBox = safeBox;
+    }
+
     // =========================================================================
     // Rendering
     // =========================================================================
@@ -580,7 +606,11 @@ public class Table implements RichRenderable {
         // Simplified: measure based on column count and padding
         int minWidth = showEdge ? 2 : 0; // left + right border if showing edges
         int maxWidth = options.getMaxWidth();
-        minWidth += columns.size() * (DEFAULT_TABLE_PADDING * 2 + 1); // padding + minimum 1 char content
+        // For grid tables (box=null), padding is used as inter-column separator,
+        // so the effective padding per column is 0 (no padding*2). For bordered
+        // tables, each column has padding*2 overhead.
+        int effectivePadding = box != null ? padding * 2 : 0;
+        minWidth += columns.size() * (effectivePadding + 1); // padding + minimum 1 char content
         return new Measurement(Math.min(minWidth, maxWidth), maxWidth);
     }
 
@@ -588,11 +618,22 @@ public class Table implements RichRenderable {
     public Iterable<?> richConsole(Console console, ConsoleOptions options) {
         List<Segment> segments = new ArrayList<>();
 
-        if (columns.isEmpty()) {
-            return segments;
+        // Calculate implicit column count if columns.isEmpty()
+        int numCols = columns.size();
+        if (numCols == 0) {
+            // Grid table without explicit columns: infer from row content
+            for (List<Object> row : rows) {
+                numCols = Math.max(numCols, row.size());
+            }
+            if (numCols == 0) {
+                return segments; // No columns and no rows with content
+            }
         }
 
         boolean isGrid = (box == null);
+
+        boolean safe = safeBox != null ? safeBox : console.isSafeBox();
+        Box resolvedBox = box != null ? box.substitute(options, safe) : null;
 
         // Resolve styles
         Style borderStyleResolved = borderStyle != null ? console.getStyle(borderStyle) : null;
@@ -606,22 +647,9 @@ public class Table implements RichRenderable {
             maxWidth = width;
         }
 
-        // Calculate column widths
-        int numCols = columns.size();
-        int edgeWidth;
-        int innerBorders;
-        if (isGrid) {
-            // Grid table: no edge borders, padding between columns instead of dividers
-            edgeWidth = 0;
-            innerBorders = padding * Math.max(0, numCols - 1); // padding acts as separator
-        } else {
-            edgeWidth = showEdge ? 2 : 0;
-            innerBorders = Math.max(0, numCols - 1);
-        }
-        int availableForColumns = maxWidth - edgeWidth - innerBorders;
-
-        // Use ratio-based column width calculation
-        int[] calculatedWidths = calculateColumnWidths(console, options, availableForColumns);
+        // Calculate column widths (handles implicit columns)
+        int[] calculatedWidths = calculateColumnWidths(console, options, maxWidth);
+        numCols = calculatedWidths.length;  // Update numCols from calculated widths
 
         // Build padded widths list
         List<Integer> paddedWidths = new ArrayList<>();
@@ -640,16 +668,16 @@ public class Table implements RichRenderable {
 
         // ---- Top border ----
         if (showEdge) {
-            segments.add(new Segment(box.getTop(paddedWidths), borderStyleResolved));
+            segments.add(new Segment(resolvedBox.getTop(paddedWidths), borderStyleResolved));
             segments.add(Segment.line());
         }
 
         // ---- Header row ----
         if (showHeader) {
             addDataRow(segments, columns, paddedWidths, borderStyleResolved, headerStyleResolved, true, console,
-                    options);
+                    options, resolvedBox);
             // Header separator
-            segments.add(new Segment(box.getRow(paddedWidths, "head", showEdge), borderStyleResolved));
+            segments.add(new Segment(resolvedBox.getRow(paddedWidths, "head", showEdge), borderStyleResolved));
             segments.add(Segment.line());
         }
 
@@ -665,12 +693,12 @@ public class Table implements RichRenderable {
                 }
             }
             addDataRowFromValues(segments, cellSources, paddedWidths, borderStyleResolved, tableStyleResolved, console,
-                    options);
+                    options, resolvedBox);
 
             // Separator between rows (or before footer)
             boolean isLastRow = (rowIdx == rows.size() - 1);
             if (showLines && !isLastRow) {
-                segments.add(new Segment(box.getRow(paddedWidths, "row", showEdge), borderStyleResolved));
+                segments.add(new Segment(resolvedBox.getRow(paddedWidths, "row", showEdge), borderStyleResolved));
                 segments.add(Segment.line());
             }
         }
@@ -685,16 +713,16 @@ public class Table implements RichRenderable {
                 }
             }
             if (hasFooters) {
-                segments.add(new Segment(box.getRow(paddedWidths, "foot", showEdge), borderStyleResolved));
+                segments.add(new Segment(resolvedBox.getRow(paddedWidths, "foot", showEdge), borderStyleResolved));
                 segments.add(Segment.line());
                 addDataRow(segments, columns, paddedWidths, borderStyleResolved, footerStyleResolved, false, console,
-                        options);
+                        options, resolvedBox);
             }
         }
 
         // ---- Bottom border ----
         if (showEdge) {
-            segments.add(new Segment(box.getBottom(paddedWidths), borderStyleResolved));
+            segments.add(new Segment(resolvedBox.getBottom(paddedWidths), borderStyleResolved));
             segments.add(Segment.line());
         }
 
@@ -713,7 +741,8 @@ public class Table implements RichRenderable {
     private void renderGridRow(List<Segment> segments, List<Object> row,
             List<Integer> paddedWidths,
             Console console, ConsoleOptions options) {
-        int numCols = columns.size();
+        // Use paddedWidths.size() which accounts for implicit columns
+        int numCols = paddedWidths.size();
 
         // Step 1: Render each cell into lines, applying column style
         List<List<List<Segment>>> cellLines = new ArrayList<>();
@@ -722,19 +751,28 @@ public class Table implements RichRenderable {
         for (int colIdx = 0; colIdx < numCols; colIdx++) {
             Object cell = colIdx < row.size() ? row.get(colIdx) : "";
             int colWidth = paddedWidths.get(colIdx);
-            TableColumn col = columns.get(colIdx);
+            // For implicit columns, col config is null
+            TableColumn col = (colIdx < columns.size()) ? columns.get(colIdx) : null;
 
             // Resolve column style
             Style colStyle = null;
-            if (col.getStyle() != null) {
+            if (col != null && col.getStyle() != null) {
                 colStyle = console.getStyle(col.getStyle());
             }
 
-            // Apply column overflow setting
-            String overflow = col.getOverflow();
+            // Apply column settings (justify, noWrap, overflow) matching Python rich's
+            // _render() which passes these to options.update()
+            String overflow = col != null ? col.getOverflow() : null;
+            String justify = col != null ? col.getJustify() : null;
+            boolean noWrap = col != null && col.isNoWrap();
             ConsoleOptions cellOptions = options.updateWidth(colWidth);
-            if (overflow != null) {
-                cellOptions = cellOptions.update(null, null, null, null, overflow, null, null, null, null);
+            // Build non-null args for update() — only pass what's actually set
+            String updateOverflow = overflow;
+            String updateJustify = justify;
+            Boolean updateNoWrap = noWrap ? Boolean.TRUE : null;
+            if (updateOverflow != null || updateJustify != null || updateNoWrap != null) {
+                cellOptions = cellOptions.update(null, null, null,
+                        updateJustify, updateOverflow, updateNoWrap, null, null, null);
             }
 
             // Render cell into lines
@@ -786,8 +824,8 @@ public class Table implements RichRenderable {
 
                 List<List<Segment>> lines = cellLines.get(colIdx);
                 int colWidth = paddedWidths.get(colIdx);
-                TableColumn col = columns.get(colIdx);
-                Style colStyle = col.getStyle() != null ? console.getStyle(col.getStyle()) : null;
+                TableColumn col = (colIdx < columns.size()) ? columns.get(colIdx) : null;
+                Style colStyle = col != null && col.getStyle() != null ? console.getStyle(col.getStyle()) : null;
 
                 if (lineNo < lines.size()) {
                     segments.addAll(lines.get(lineNo));
@@ -807,7 +845,7 @@ public class Table implements RichRenderable {
     private void addDataRow(List<Segment> segments, List<TableColumn> cols,
             List<Integer> paddedWidths,
             Style borderStyle, Style cellStyle, boolean isHeader,
-            Console console, ConsoleOptions options) {
+            Console console, ConsoleOptions options, Box resolvedBox) {
         // Build cell renderables from column headers or footers
         List<Object> cellValues = new ArrayList<>();
         for (TableColumn col : cols) {
@@ -815,39 +853,39 @@ public class Table implements RichRenderable {
             cellValues.add(value);
         }
         String rowType = isHeader ? Box.HEAD : Box.FOOT;
-        renderCells(segments, cellValues, paddedWidths, borderStyle, cellStyle, rowType, console, options);
+        renderCells(segments, cellValues, paddedWidths, borderStyle, cellStyle, rowType, console, options, resolvedBox);
     }
 
     private void addDataRowFromValues(List<Segment> segments, List<Object> cellValues,
             List<Integer> paddedWidths,
             Style borderStyle, Style cellStyle,
-            Console console, ConsoleOptions options) {
-        renderCells(segments, cellValues, paddedWidths, borderStyle, cellStyle, Box.MID, console, options);
+            Console console, ConsoleOptions options, Box resolvedBox) {
+        renderCells(segments, cellValues, paddedWidths, borderStyle, cellStyle, Box.MID, console, options, resolvedBox);
     }
 
     private void renderCells(List<Segment> segments, List<Object> cellValues,
             List<Integer> paddedWidths,
             Style borderStyle, Style cellStyle, String rowType,
-            Console console, ConsoleOptions options) {
+            Console console, ConsoleOptions options, Box resolvedBox) {
         // Select edge and divider characters based on row type
         String leftEdge;
         String rightEdge;
         String divider;
         switch (rowType) {
             case Box.HEAD:
-                leftEdge = box.headLeft;
-                rightEdge = box.headRight;
-                divider = box.headVertical;
+                leftEdge = resolvedBox.headLeft;
+                rightEdge = resolvedBox.headRight;
+                divider = resolvedBox.headVertical;
                 break;
             case Box.FOOT:
-                leftEdge = box.footLeft;
-                rightEdge = box.footRight;
-                divider = box.footVertical;
+                leftEdge = resolvedBox.footLeft;
+                rightEdge = resolvedBox.footRight;
+                divider = resolvedBox.footVertical;
                 break;
             default:
-                leftEdge = box.midLeft;
-                rightEdge = box.midRight;
-                divider = box.midVertical;
+                leftEdge = resolvedBox.midLeft;
+                rightEdge = resolvedBox.midRight;
+                divider = resolvedBox.midVertical;
                 break;
         }
 
@@ -947,24 +985,35 @@ public class Table implements RichRenderable {
      * For Text objects, uses getPlain(). For other RichRenderables,
      * uses the first line width. Falls back to toString().
      */
-    private int measureCellWidth(Object cell) {
-        if (cell == null)
-            return 0;
-        if (cell instanceof Text) {
-            return Cells.cellLen(((Text) cell).getPlain());
+    private Measurement measureCell(Console console, ConsoleOptions options, Object cell) {
+        if (cell == null) {
+            return new Measurement(0, 0);
         }
-        if (cell instanceof String) {
-            return Cells.cellLen((String) cell);
-        }
-        // For other types, use toString() as best-effort
-        return Cells.cellLen(cell.toString());
+        // Use Measurement.get() to properly measure RichRenderable objects
+        return Measurement.get(console, options, cell);
     }
 
     private int[] calculateColumnWidths(Console console, ConsoleOptions options, int availableWidth) {
-        // TODO: use console and options for column width measurement
         int numCols = columns.size();
-        if (numCols == 0)
-            return new int[0];
+        if (numCols == 0) {
+            // Grid table without explicit columns: infer from row content
+            for (List<Object> row : rows) {
+                numCols = Math.max(numCols, row.size());
+            }
+            if (numCols == 0) {
+                return new int[0];
+            }
+        }
+
+        // For grid tables, subtract inter-column padding from available width.
+        // renderGridRow adds `padding` spaces between columns, so we need to
+        // allocate column widths that fit within the remaining space.
+        // This matches Python rich's behavior where padding is accounted for
+        // in column width calculation.
+        if (box == null && padding > 0 && numCols > 1) {
+            int interColumnPadding = padding * (numCols - 1);
+            availableWidth = Math.max(0, availableWidth - interColumnPadding);
+        }
 
         int[] widths = new int[numCols];
 
@@ -975,9 +1024,10 @@ public class Table implements RichRenderable {
         double totalRatio = 0;
 
         for (int i = 0; i < numCols; i++) {
-            TableColumn col = columns.get(i);
-            boolean hasExplicitWidth = col.getWidth() != null;
-            boolean isFlexible = col.getRatio() != null;
+            // For implicit columns (columns.size() < numCols), use null config
+            TableColumn col = (i < columns.size()) ? columns.get(i) : null;
+            boolean hasExplicitWidth = col != null && col.getWidth() != null;
+            boolean isFlexible = col != null && col.getRatio() != null;
 
             if (hasExplicitWidth && !isFlexible) {
                 // Fixed-width column: width acts as both min and max
@@ -1006,13 +1056,13 @@ public class Table implements RichRenderable {
             int minContentWidth = 1;
 
             // Measure header
-            if (col.getHeader() != null) {
+            if (col != null && col.getHeader() != null) {
                 int headerLen = Cells.cellLen(col.getHeader().toString());
                 maxContentWidth = Math.max(maxContentWidth, headerLen);
             }
 
             // Measure footer
-            if (col.getFooter() != null) {
+            if (col != null && col.getFooter() != null) {
                 int footerLen = Cells.cellLen(col.getFooter().toString());
                 maxContentWidth = Math.max(maxContentWidth, footerLen);
             }
@@ -1021,8 +1071,9 @@ public class Table implements RichRenderable {
             for (List<Object> row : rows) {
                 if (i < row.size()) {
                     Object cell = row.get(i);
-                    int cellLen = measureCellWidth(cell);
-                    maxContentWidth = Math.max(maxContentWidth, cellLen);
+                    Measurement cellMeasure = measureCell(console, options, cell);
+                    minContentWidth = Math.max(minContentWidth, cellMeasure.minimum());
+                    maxContentWidth = Math.max(maxContentWidth, cellMeasure.maximum());
                 }
             }
 
@@ -1035,17 +1086,20 @@ public class Table implements RichRenderable {
             }
 
             // Apply column constraints
-            if (col.getMinWidth() != null) {
+            if (col != null && col.getMinWidth() != null) {
                 minContentWidth = Math.max(minContentWidth, col.getMinWidth());
             }
-            if (col.getMaxWidth() != null) {
+            if (col != null && col.getMaxWidth() != null) {
                 maxContentWidth = Math.min(maxContentWidth, col.getMaxWidth());
             }
             maxContentWidth = Math.max(maxContentWidth, minContentWidth);
 
             minWidths[i] = minContentWidth;
             maxWidths[i] = maxContentWidth;
-            ratios[i] = col.getRatio() != null ? col.getRatio() : 0;
+            // Grid tables (box=null) use ratio=0 by default, matching Python rich.
+            // Only columns with explicit ratio (setRatio) get flexible space.
+            // Bordered tables also use ratio=0 by default (content-based).
+            ratios[i] = (col != null && col.getRatio() != null) ? col.getRatio() : 0;
             totalRatio += ratios[i];
         }
 
@@ -1061,12 +1115,65 @@ public class Table implements RichRenderable {
         // Matches Python rich's _calculate_column_widths logic:
         // - Non-ratio (fixed) columns get their measured content width
         // - Ratio (flexible) columns share the remaining space by ratio
-        if (expand && totalRatio > 0) {
-            // Calculate fixed columns' total width
+        // - When expand=True and no ratio columns, distribute evenly
+
+        if (expand && totalRatio == 0) {
+            // expand=True with no ratio columns: fixed-width columns keep their size,
+            // remaining space distributed evenly among flexible columns.
+            // This matches Python rich's behavior for grid tables with expand.
+            int fixedTotal = 0;
+            int flexibleCount = 0;
+            for (int i = 0; i < numCols; i++) {
+                boolean isFixed = (i < columns.size() && columns.get(i).getWidth() != null);
+                if (isFixed) {
+                    fixedTotal += minWidths[i];
+                } else {
+                    flexibleCount++;
+                }
+            }
+
+            int remaining = availableWidth - fixedTotal;
+            if (flexibleCount > 0 && remaining > 0) {
+                int perColumn = remaining / flexibleCount;
+                int extra = remaining % flexibleCount;
+                for (int i = 0; i < numCols; i++) {
+                    boolean isFixed = (i < columns.size() && columns.get(i).getWidth() != null);
+                    if (isFixed) {
+                        widths[i] = minWidths[i];
+                    } else {
+                        widths[i] = perColumn;
+                        if (extra > 0) {
+                            widths[i]++;
+                            extra--;
+                        }
+                        widths[i] = Math.max(widths[i], minWidths[i]);
+                        widths[i] = Math.min(widths[i], maxWidths[i]);
+                    }
+                }
+            } else {
+                // No flexible columns: distribute evenly (capped by maxWidths)
+                int perColumn = availableWidth / numCols;
+                int extra = availableWidth % numCols;
+                for (int i = 0; i < numCols; i++) {
+                    widths[i] = perColumn;
+                    if (extra > 0) {
+                        widths[i]++;
+                        extra--;
+                    }
+                    widths[i] = Math.max(widths[i], minWidths[i]);
+                    widths[i] = Math.min(widths[i], maxWidths[i]);
+                }
+            }
+        } else if (totalRatio > 0) {
+            // Calculate fixed columns' total width using minWidths (content widths),
+            // not maxWidths (which are always fullTerminalWidth due to
+            // Measurement.get.withMaximum). This matches Python rich's behavior where
+            // non-ratio columns get their content widths and ratio columns share the
+            // remaining space.
             int fixedTotal = 0;
             for (int i = 0; i < numCols; i++) {
                 if (ratios[i] == 0) {
-                    fixedTotal += maxWidths[i];
+                    fixedTotal += minWidths[i];
                 }
             }
 
@@ -1082,7 +1189,10 @@ public class Table implements RichRenderable {
                 if (ratios[i] > 0) {
                     if (remainingRatio > 0) {
                         int distributed = (int) Math.ceil(ratios[i] * remaining / remainingRatio);
-                        distributed = Math.max(distributed, minWidths[i]);
+                        // Ensure minWidth constraint, but don't exceed availableWidth
+                        if (minWidths[i] <= flexibleWidth) {
+                            distributed = Math.max(distributed, minWidths[i]);
+                        }
                         widths[i] = distributed;
                         remaining -= distributed;
                         remainingRatio -= (int) Math.round(ratios[i]);
@@ -1090,7 +1200,7 @@ public class Table implements RichRenderable {
                         widths[i] = minWidths[i];
                     }
                 } else {
-                    widths[i] = maxWidths[i];
+                    widths[i] = minWidths[i];
                 }
             }
 
@@ -1131,25 +1241,33 @@ public class Table implements RichRenderable {
                     expandExtra--;
                 }
             } else {
+                // expand=false: use content-based max widths, matching Python rich's
+                // "widths = [_range.maximum or 1 for _range in width_ranges]"
                 System.arraycopy(maxWidths, 0, widths, 0, numCols);
             }
         } else if (totalMin <= availableWidth) {
-            // Need to shrink — reduce from max widths proportionally
-            int excess = totalMax - availableWidth;
-            for (int i = 0; i < numCols; i++) {
-                int shrinkable = maxWidths[i] - minWidths[i];
-                widths[i] = maxWidths[i] - (int) ((double) shrinkable * excess / (totalMax - totalMin));
-                widths[i] = Math.max(widths[i], minWidths[i]);
-            }
-            // Adjust for rounding errors
-            int usedWidth = 0;
-            for (int w : widths)
-                usedWidth += w;
-            int remaining = availableWidth - usedWidth;
-            // Distribute remaining width
-            for (int i = 0; remaining > 0; i = (i + 1) % numCols) {
-                widths[i]++;
-                remaining--;
+            // Need to shrink or use content widths
+            if (expand) {
+                // expand=True: shrink proportionally to fill available width
+                int excess = totalMax - availableWidth;
+                for (int i = 0; i < numCols; i++) {
+                    int shrinkable = maxWidths[i] - minWidths[i];
+                    widths[i] = maxWidths[i] - (int) ((double) shrinkable * excess / (totalMax - totalMin));
+                    widths[i] = Math.max(widths[i], minWidths[i]);
+                }
+                // Adjust for rounding errors
+                int usedWidth = 0;
+                for (int w : widths)
+                    usedWidth += w;
+                int remaining = availableWidth - usedWidth;
+                for (int i = 0; remaining > 0; i = (i + 1) % numCols) {
+                    widths[i]++;
+                    remaining--;
+                }
+            } else {
+                // expand=false: start from max widths; the final normalization
+                // shrinks from the widest columns down to availableWidth if needed.
+                System.arraycopy(maxWidths, 0, widths, 0, numCols);
             }
         } else {
             // Even minimums don't fit — just use minimum widths

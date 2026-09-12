@@ -853,6 +853,42 @@ public class Style {
         return result;
     }
 
+    /**
+     * Get the CSS rules for SVG export, e.g. {@code "fill: #c9d1d9;font-weight: bold"}.
+     * Colors fall back to the theme's foreground/background; {@code dim} blends the
+     * color toward the background, matching rich's inline {@code get_svg_style}.
+     */
+    public String getSvgStyle(TerminalTheme theme) {
+        List<String> css = new ArrayList<>();
+        if (nullStyle) {
+            css.add("fill: " + theme.getForegroundColor().hex());
+            return String.join(";", css);
+        }
+
+        ColorTriplet color = (this.color == null || this.color.isDefault())
+                ? theme.getForegroundColor()
+                : this.color.getTruecolor(theme, true);
+        ColorTriplet bgcolor = (this.bgcolor == null || this.bgcolor.isDefault())
+                ? theme.getBackgroundColor()
+                : this.bgcolor.getTruecolor(theme, false);
+
+        Boolean b;
+        if ((b = reverse()) != null && b) {
+            ColorTriplet swap = color;
+            color = bgcolor;
+            bgcolor = swap;
+        }
+        if ((b = dim()) != null && b) {
+            color = color.blend(bgcolor, 0.4);
+        }
+        css.add("fill: " + color.hex());
+        if ((b = bold()) != null && b) css.add("font-weight: bold");
+        if ((b = italic()) != null && b) css.add("font-style: italic;");
+        if ((b = underline()) != null && b) css.add("text-decoration: underline;");
+        if ((b = strike()) != null && b) css.add("text-decoration: line-through;");
+        return String.join(";", css);
+    }
+
     // =========================================================================
     // equals / hashCode
     // =========================================================================

@@ -11,6 +11,7 @@ import com.justnothing.richconsole.color.ColorTriplet;
 import com.justnothing.richconsole.color.ColorUtils;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
+import com.justnothing.richconsole.measure.Measurement;
 import com.justnothing.richconsole.segment.Segment;
 import com.justnothing.richconsole.style.Style;
 
@@ -226,6 +227,12 @@ public class ProgressBar implements RichRenderable {
 
         int end = Math.min(offset + width, allSegments.size());
         return new ArrayList<>(allSegments.subList(offset, end));
+    }
+
+    @Override
+    public Measurement richMeasure(Console console, ConsoleOptions options) {
+        int barWidth = this.width != null ? this.width : options.getMaxWidth();
+        return new Measurement(0, Math.min(barWidth, options.getMaxWidth()));
     }
 
     @Override

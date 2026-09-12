@@ -167,13 +167,16 @@ public class Syntax implements RichRenderable {
     // Theme resolution
     // =========================================================================
 
+    /**
+     * Get a syntax theme by name, mirroring rich's Syntax.get_theme().
+     * Unknown names fall back to the default theme.
+     */
+    public static SyntaxTheme getTheme(String name) {
+        return SyntaxThemes.get(name);
+    }
+
     private static SyntaxTheme resolveTheme(String themeName) {
-        if (themeName == null) return SyntaxTheme.MONOKAI;
-        return switch (themeName.toLowerCase()) {
-            case "dark" -> SyntaxTheme.ANSI_DARK;
-            case "light" -> SyntaxTheme.ANSI_LIGHT;
-            default -> SyntaxTheme.MONOKAI;
-        };
+        return SyntaxThemes.get(themeName);
     }
 
     // =========================================================================

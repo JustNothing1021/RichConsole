@@ -31,7 +31,7 @@ java {
 }
 
 application {
-    mainClass = 'com.justnothing.richconsole.demo.RichConsoleDemo'
+    mainClass = 'com.justnothing.richconsole.demo.TestCardDemo'
 }
 
 // Create a runnable jar with dependencies

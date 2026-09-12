@@ -5,6 +5,7 @@ import com.justnothing.richconsole.box.Box;
 import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.ConsoleOptions;
 import com.justnothing.richconsole.console.Group;
+import com.justnothing.richconsole.measure.Measurement;
 import com.justnothing.richconsole.markdown.Markdown;
 import com.justnothing.richconsole.panel.Panel;
 import com.justnothing.richconsole.pretty.Pretty;
@@ -12,6 +13,7 @@ import com.justnothing.richconsole.segment.Segment;
 import com.justnothing.richconsole.style.Style;
 import com.justnothing.richconsole.syntax.Syntax;
 import com.justnothing.richconsole.table.Table;
+import com.justnothing.richconsole.table.Table.TableColumn;
 import com.justnothing.richconsole.text.Text;
 
 import java.util.ArrayList;
@@ -30,6 +32,13 @@ public class TestCardDemo {
     // =========================================================================
 
     private static class ColorBox implements RichRenderable {
+        @Override
+        public Measurement richMeasure(Console console, ConsoleOptions options) {
+            // ColorBox can render at any width, but needs at least 1 char
+            int maxWidth = options.getMaxWidth();
+            return new Measurement(1, Math.max(1, maxWidth));
+        }
+
         @Override
         public Iterable<?> richConsole(Console console, ConsoleOptions options) {
             List<Segment> segments = new ArrayList<>();
@@ -99,7 +108,9 @@ public class TestCardDemo {
 
         Table card = Table.grid(1, true);
         card.setTitle("RichConsole features");
-        card.addColumn("Feature", "bold red", "center").setNoWrap(true);
+        TableColumn featureCol = card.addColumn("Feature", "bold red", "center");
+        featureCol.setNoWrap(true);
+        featureCol.setWidth(12);
         card.addColumn("Demonstration");
 
         // ── Colors ──

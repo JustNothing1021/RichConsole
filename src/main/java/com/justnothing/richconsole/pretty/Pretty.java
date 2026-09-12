@@ -346,7 +346,9 @@ public class Pretty implements RichRenderable {
             Style numberStyle = resolveStyle(console, "repr.number");
             segments.add(new Segment(truncate(text), numberStyle));
         } else if (obj instanceof Boolean) {
-            Style boolStyle = resolveStyle(console, "repr.bool");
+            // Python rich uses repr.boolTrue / repr.boolFalse (distinct styles
+            // for true vs false), not a single repr.bool style.
+            Style boolStyle = resolveStyle(console, (Boolean) obj ? "repr.boolTrue" : "repr.boolFalse");
             segments.add(new Segment(text, boolStyle));
         } else if (obj instanceof Character) {
             Style strStyle = resolveStyle(console, "repr.str");
@@ -374,9 +376,8 @@ public class Pretty implements RichRenderable {
     /**
      * Add indentation segments and return the total width of the indentation.
      */
-    // TODO: use console to get theme style "repr.indent" instead of hardcoded "dim"
     private int addIndent(List<Segment> segments, int depth, Console console) {
-        Style guideStyle = Style.parse("dim");
+        Style guideStyle = console.getStyle("repr.indent", "");
         int spacesPerLevel = indent;
         int guideWidth = 1;  // width of the │ character
 

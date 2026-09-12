@@ -26,4 +26,15 @@ public record ColorTriplet(int red, int green, int blue) {
     public float[] normalized() {
         return new float[]{red / 255f, green / 255f, blue / 255f};
     }
+
+    /**
+     * Blend this color toward {@code other} by {@code crossFade} (0..1),
+     * matching rich's {@code blend_rgb}. Used for dimmed SVG colors.
+     */
+    public ColorTriplet blend(ColorTriplet other, double crossFade) {
+        int r = (int) ((other.red * crossFade) + (red * (1 - crossFade)));
+        int g = (int) ((other.green * crossFade) + (green * (1 - crossFade)));
+        int b = (int) ((other.blue * crossFade) + (blue * (1 - crossFade)));
+        return new ColorTriplet(r, g, b);
+    }
 }

@@ -12,6 +12,7 @@ import com.justnothing.richconsole.console.Console;
 import com.justnothing.richconsole.console.Capture;
 import com.justnothing.richconsole.console.Group;
 import com.justnothing.richconsole.containers.Renderables;
+import com.justnothing.richconsole.inspect.Inspect;
 import com.justnothing.richconsole.layout.Layout;
 import com.justnothing.richconsole.live.Live;
 import com.justnothing.richconsole.markdown.Markdown;
@@ -24,6 +25,7 @@ import com.justnothing.richconsole.prompt.IntPrompt;
 import com.justnothing.richconsole.prompt.Prompt;
 import com.justnothing.richconsole.repr.RichRepr;
 import com.justnothing.richconsole.rule.Rule;
+import com.justnothing.richconsole.scope.Scope;
 import com.justnothing.richconsole.segment.Segment;
 import com.justnothing.richconsole.segment.SegmentLines;
 import com.justnothing.richconsole.segment.Segments;
@@ -541,6 +543,49 @@ public class RichConsoleDemo {
         } else {
             console.println("[bold red]We'll try harder next time![/]");
         }
+
+        // =====================================================================
+        // 26. Syntax Theme Switching
+        // =====================================================================
+        console.rule("Syntax Themes");
+
+        String themeCode = """
+                def fib(n: int) -> int:
+                    # Classic recursive Fibonacci.
+                    if n < 2:
+                        return n
+                    return fib(n - 1) + fib(n - 2)
+                """;
+        for (String themeName : new String[]{"monokai", "ansi_dark", "ansi_light"}) {
+            console.println("[bold]Theme: " + themeName + "[/]");
+            console.println(Syntax.of(themeCode, cfg -> cfg.lexerName("python").themeName(themeName)));
+        }
+        console.println();
+
+        // =====================================================================
+        // 27. Scope & Inspect
+        // =====================================================================
+        console.rule("Scope & Inspect");
+
+        class DemoCar {
+            String model = "Model X";
+            int year = 2024;
+            double price = 79999.99;
+            boolean electric = true;
+        }
+        DemoCar car = new DemoCar();
+        console.println(Scope.ofObject(car, cfg -> cfg.title("car")));
+        console.println();
+        console.println(Inspect.of(car, cfg -> cfg.methods(true).title("car")));
+        console.println();
+
+        Map<String, Object> localScope = new LinkedHashMap<>();
+        localScope.put("__name__", "RichConsoleDemo");
+        localScope.put("width", 80);
+        localScope.put("colors", List.of("red", "green", "blue"));
+        localScope.put("pi", 3.14159);
+        console.println(Scope.of(localScope, cfg -> cfg.title("locals")));
+        console.println();
 
         // =====================================================================
         // Final
