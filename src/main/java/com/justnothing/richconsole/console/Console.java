@@ -1045,17 +1045,26 @@ public class Console {
         } else {
             richText = new Text(text, style);
         }
+        // NOTE: do NOT clear Text.end here.
+        //
+        // This used to be `richText.setEnd("")`, reasoning that trailing newlines should
+        // come only from print()'s end parameter. That holds for Console.print — its
+        // collectRenderables joins the accumulated Text objects into one and sets end on
+        // the joined result, ignoring each member's own end. But it breaks every path that
+        // renders a Text directly without going through print(), notably
+        // Console.renderLines / Panel: `Panel(Group(["a", "b"]))` rendered as "ab" on one
+        // line, because neither Text carried a newline and nothing else added one.
+        //
+        // Python rich keeps the default end ("\n") on the Text returned by render_str and
+        // strips surplus newlines at the print layer instead (_collect_renderables does
+        // `.rstrip()` on the plain text). Keeping the default here matches that and keeps
+        // this file aligned with upstream.
         if (justify != null) {
             richText.setJustify(justify);
         }
         if (overflow != null) {
             richText.setOverflow(overflow);
         }
-
-        // Set end="" so that trailing newlines are controlled by print()'s end parameter,
-        // not by the Text object itself. This matches Python rich's _collect_renderables
-        // which sets end through the join text, not on individual render_str results.
-        richText.setEnd("");
 
         if (highlightEnabled && this.highlighter != null) {
             richText = this.highlighter.apply(richText);

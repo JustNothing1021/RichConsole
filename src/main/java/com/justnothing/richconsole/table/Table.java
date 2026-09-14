@@ -730,6 +730,29 @@ public class Table implements RichRenderable {
     }
 
     /**
+     * 把某一列的 noWrap / overflow / justify 应用到单元格的渲染选项上。
+     *
+     * <p>提成一个公共方法，是因为这里原本只在网格行那一处应用了：普通数据行走的是
+     * {@link #renderCells}，它只 {@code updateWidth()} 就完事，把列上的 noWrap / overflow
+     * 整个丢掉了。表现就是"列明明设了 noWrap，长单元格照样折行" —— 而折行会让一行数据
+     * 变成两行，把所有按行数算好的布局（比如 jank 面板）顶穿。</p>
+     */
+    private static ConsoleOptions cellOptions(TableColumn col, ConsoleOptions options, int width) {
+        ConsoleOptions cellOptions = options.updateWidth(width);
+        if (col == null) {
+            return cellOptions;
+        }
+        String overflow = col.getOverflow();
+        String justify = col.getJustify();
+        Boolean noWrap = col.isNoWrap() ? Boolean.TRUE : null;
+        if (overflow != null || justify != null || noWrap != null) {
+            cellOptions = cellOptions.update(null, null, null,
+                    justify, overflow, noWrap, null, null, null);
+        }
+        return cellOptions;
+    }
+
+    /**
      * Render a row in grid mode (no borders).
      * Matches Python rich's Table._render() box=None path:
      * 1. Render each cell into lines (List<List<Segment>>)
@@ -762,18 +785,7 @@ public class Table implements RichRenderable {
 
             // Apply column settings (justify, noWrap, overflow) matching Python rich's
             // _render() which passes these to options.update()
-            String overflow = col != null ? col.getOverflow() : null;
-            String justify = col != null ? col.getJustify() : null;
-            boolean noWrap = col != null && col.isNoWrap();
-            ConsoleOptions cellOptions = options.updateWidth(colWidth);
-            // Build non-null args for update() — only pass what's actually set
-            String updateOverflow = overflow;
-            String updateJustify = justify;
-            Boolean updateNoWrap = noWrap ? Boolean.TRUE : null;
-            if (updateOverflow != null || updateJustify != null || updateNoWrap != null) {
-                cellOptions = cellOptions.update(null, null, null,
-                        updateJustify, updateOverflow, updateNoWrap, null, null, null);
-            }
+            ConsoleOptions cellOptions = cellOptions(col, options, colWidth);
 
             // Render cell into lines
             List<List<Segment>> lines;
@@ -897,13 +909,14 @@ public class Table implements RichRenderable {
             Object cell = cellValues.get(i);
             int colWidth = paddedWidths.get(i);
             int contentWidth = colWidth - padding * 2;
+            TableColumn col = (i < columns.size()) ? columns.get(i) : null;
 
             // Resolve column style for this cell
 
             // Render cell into lines using renderLines (supports multi-line cells)
             List<List<Segment>> lines;
             if (cell instanceof RichRenderable) {
-                ConsoleOptions cellOptions = options.updateWidth(contentWidth);
+                ConsoleOptions cellOptions = cellOptions(col, options, contentWidth);
                 Object cellToRender = cell;
                 if (cellStyle != null && !cellStyle.isNull()) {
                     cellToRender = new Styled(cell, cellStyle);
@@ -917,7 +930,7 @@ public class Table implements RichRenderable {
                     if (cellStyle != null && !cellStyle.isNull()) {
                         cellToRender = new Styled(rendered, cellStyle);
                     }
-                    ConsoleOptions cellOptions = options.updateWidth(contentWidth);
+                    ConsoleOptions cellOptions = cellOptions(col, options, contentWidth);
                     lines = console.renderLines(cellToRender, cellOptions, cellStyle, true, false);
                 } else {
                     List<Segment> lineSegs = new ArrayList<>();
@@ -1013,6 +1026,17 @@ public class Table implements RichRenderable {
         if (box == null && padding > 0 && numCols > 1) {
             int interColumnPadding = padding * (numCols - 1);
             availableWidth = Math.max(0, availableWidth - interColumnPadding);
+        }
+
+        // For bordered tables, availableWidth is the total width the table may
+        // occupy (border included), but below it is used as the sum of column
+        // widths. Subtract the border overhead first — otherwise every rendered
+        // row comes out 2 + (numCols - 1) cells too wide and the right border
+        // gets clipped by the caller.
+        // Equivalent to Python rich's Table._get_table_width().
+        if (box != null && numCols > 0) {
+            int borderOverhead = 2 + (numCols - 1); // left/right edge + inner dividers
+            availableWidth = Math.max(0, availableWidth - borderOverhead);
         }
 
         int[] widths = new int[numCols];

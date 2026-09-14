@@ -319,26 +319,25 @@ public class Layout implements RichRenderable {
 
         ConsoleOptions childOptions = options.updateDimensions(region.width, region.height);
 
-        Iterable<?> rendered;
-        if (renderable instanceof RichRenderable) {
-            rendered = ((RichRenderable) renderable).richConsole(console, childOptions);
-        } else if (console != null) {
-            rendered = console.render(renderable, childOptions);
-        } else {
+        if (console == null) {
             return new ArrayList<>();
         }
 
-        // Convert rendered output to segment list
-        List<Segment> allSegments = new ArrayList<>();
-        for (Object item : rendered) {
-            if (item instanceof Segment) {
-                allSegments.add((Segment) item);
-            }
-        }
+        // Render through Console.render, matching Python's `console.render_lines`
+        // (rich/layout.py Layout.render).
+        //
+        // This used to shortcut to `((RichRenderable) renderable).richConsole(...)`
+        // when the content happened to be a RichRenderable. That skips the
+        // console's collect/flatten pass, so any renderable that defers its
+        // children to the console came out empty — Group is the obvious one:
+        // Group.richConsole() just hands back its children without rendering
+        // them, so everything was filtered out below and the whole region
+        // rendered blank.
+        Iterable<Segment> rendered = console.render(renderable, childOptions);
 
         // Split into lines
         List<List<Segment>> lines = new ArrayList<>();
-        for (List<Segment> line : Segment.splitLines(allSegments)) {
+        for (List<Segment> line : Segment.splitLines(rendered)) {
             lines.add(line);
         }
 

@@ -226,7 +226,16 @@ public class Live implements AutoCloseable, RenderHook {
                     console.setAltScreen(false);
                 }
                 if (transientMode && !altScreen) {
+                    // clearRendered() 依赖 liveRender 已经算出过高宽（shape != null）。
+                    // 如果这一帧从没被真正渲染过（shape 为 null），它什么都不会做 ——
+                    // 光标还停在 spinner/进度条那一行的末尾，调用方接着输出就会和残留
+                    // 内容拼成一行（实测："⠏反编译 xxx…" 和紧跟的错误信息合并）。
+                    // 所以清不掉时必须补一个换行，把光标送到新行。
+                    boolean cleared = liveRender.getLastRenderHeight() > 0;
                     clearRendered();
+                    if (!cleared) {
+                        console.line();
+                    }
                 }
             }
             if (!transientMode) {
