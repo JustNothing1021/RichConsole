@@ -249,14 +249,16 @@ public class Layout implements RichRenderable {
     /**
      * Recursively build a render map for this layout and its children.
      * Each leaf layout is rendered and stored with its region info.
+     *
+     * @return 这个子树实际用到的下边界（不含）：横向分割时父级靠它把矮的那一列垫高。
      */
-    private void buildRenderMap(Console console, ConsoleOptions options,
-                                Region region, List<LayoutRenderEntry> entries) {
+    private int buildRenderMap(Console console, ConsoleOptions options,
+                               Region region, List<LayoutRenderEntry> entries) {
         if (splits.isEmpty()) {
             // Leaf node — render the content
             List<List<Segment>> lines = renderLeaf(console, options, region);
             entries.add(new LayoutRenderEntry(region, lines));
-            return;
+            return region.y + lines.size();
         }
 
         // Has splits — divide region among children
@@ -269,9 +271,18 @@ public class Layout implements RichRenderable {
         }
 
         if ("horizontal".equals(direction)) {
-            // Side by side — divide width
+            // 并排：按宽度切分。每一列先渲染到自己的表里，再看谁更高。
+            //
+            // 不能边算宽度边往 entries 里塞：内容高度是列自己的事，左列矮右列高是常态，
+            // 而下面合并行时是按行号对齐的。矮的那一列如果不补够空行，高的那一列多出来的
+            // 行就会被当成"这一行只有我"，从 x=0 开始拼 —— 右边面板的底边框会横穿左列，
+            // 看上去就像被割成了两半。
             int xOffset = region.x;
             int remainingWidth = region.width;
+            List<List<LayoutRenderEntry>> columns = new ArrayList<>(splits.size());
+            List<Region> columnRegions = new ArrayList<>(splits.size());
+            List<Integer> columnBottoms = new ArrayList<>(splits.size());
+            int bottom = region.y;
             for (int i = 0; i < splits.size(); i++) {
                 Layout child = splits.get(i);
                 int childWidth;
@@ -283,29 +294,66 @@ public class Layout implements RichRenderable {
                             (int) ((double) child.ratio / totalRatio * region.width));
                     remainingWidth -= childWidth;
                 }
-                child.buildRenderMap(console, options,
-                        new Region(xOffset, region.y, childWidth, region.height), entries);
+                Region columnRegion = new Region(xOffset, region.y, childWidth, region.height);
+                List<LayoutRenderEntry> column = new ArrayList<>();
+                int columnBottom = child.buildRenderMap(console, options, columnRegion, column);
+                columns.add(column);
+                columnRegions.add(columnRegion);
+                columnBottoms.add(columnBottom);
+                bottom = Math.max(bottom, columnBottom);
                 xOffset += childWidth;
             }
-        } else {
-            // Vertical — divide height
-            int yOffset = region.y;
-            int remainingHeight = region.height;
-            for (int i = 0; i < splits.size(); i++) {
-                Layout child = splits.get(i);
-                int childHeight;
-                if (i == splits.size() - 1) {
-                    childHeight = remainingHeight;
-                } else {
-                    childHeight = Math.max(child.minimumSize,
-                            (int) ((double) child.ratio / totalRatio * region.height));
-                    remainingHeight -= childHeight;
+            // 按列的顺序放回，空白垫在"自己那一列的最后一行之后"，而不是整张表的末尾：
+            // 同一行里各段是按加入顺序拼起来的，垫错位置就等于把这一列挪到别人右边去了。
+            for (int i = 0; i < columns.size(); i++) {
+                int missing = bottom - columnBottoms.get(i);
+                if (missing > 0) {
+                    columns.get(i).add(
+                            blankEntry(columnRegions.get(i), columnBottoms.get(i), missing));
                 }
-                child.buildRenderMap(console, options,
-                        new Region(region.x, yOffset, region.width, childHeight), entries);
-                yOffset += childHeight;
+                entries.addAll(columns.get(i));
             }
+            return bottom;
         }
+
+        // Vertical — divide height
+        int yOffset = region.y;
+        int remainingHeight = region.height;
+        int bottom = region.y;
+        for (int i = 0; i < splits.size(); i++) {
+            Layout child = splits.get(i);
+            int childHeight;
+            if (i == splits.size() - 1) {
+                childHeight = remainingHeight;
+            } else {
+                childHeight = Math.max(child.minimumSize,
+                        (int) ((double) child.ratio / totalRatio * region.height));
+                remainingHeight -= childHeight;
+            }
+            int childBottom = child.buildRenderMap(console, options,
+                    new Region(region.x, yOffset, region.width, childHeight), entries);
+            bottom = Math.max(bottom, childBottom);
+            yOffset += childHeight;
+        }
+        return bottom;
+    }
+
+    /**
+     * 一段空白：把"内容不够高"的那一列垫到和同胞列一样高。
+     *
+     * <p>宽度必须取该列自己的宽度 —— 合并行时后面的列是靠前面列撑出来的偏移量定位的，
+     * 少一个空格，右边整块都会往左挪。</p>
+     *
+     * <p>各行共用同一个空白段是安全的：{@link Segment} 不可变，合并时也只是把引用抄进
+     * 新的行里，没人会去改它。</p>
+     */
+    private static LayoutRenderEntry blankEntry(Region column, int fromRow, int height) {
+        List<Segment> blank = Segment.adjustLineLength(new ArrayList<>(), column.width, null, true);
+        List<List<Segment>> lines = new ArrayList<>(height);
+        for (int i = 0; i < height; i++) {
+            lines.add(blank);
+        }
+        return new LayoutRenderEntry(new Region(column.x, fromRow, column.width, height), lines);
     }
 
     /**

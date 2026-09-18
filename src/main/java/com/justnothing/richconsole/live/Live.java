@@ -46,6 +46,9 @@ public class Live implements AutoCloseable, RenderHook {
         private volatile boolean done = false;
 
         RefreshThread(Live live, double refreshPerSecond) {
+            // 给线程起名：以前它是匿名的 "Thread-N"，在 system_server 的线程栈里
+            // 根本认不出是谁在烧 CPU（实测就靠 kill -3 + 人工比对才找到）。
+            super("richconsole-live");
             this.live = live;
             this.refreshPerSecond = refreshPerSecond;
             setDaemon(true);
